@@ -1,7 +1,7 @@
-#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <mpi.h>
 #include <string.h>
 #include <string>
 #include <vector>
@@ -251,40 +251,6 @@ int main(int argc, char **argv)
 
         cali_set_int(message_size_attr, message);
 
-        // const char *src_dest_attributes = R"json(
-        // {
-        //     "name": "pingpong_attributes",
-        //     "type": "boolean",
-        //     "category": "metric",
-        //     "description": "Collect pingpong attributes",
-        //     "query":
-        //     [
-        //     {
-        //         "level": "local",
-        //         "select":
-        //         [
-        //         {"expr": "any(max#src_rank)", "as": "src_rank"},
-        //         {"expr": "any(max#dest_rank)", "as": "dest_rank"},
-        //         {"expr": "any(max#src_node)", "as": "src_node"},
-        //         {"expr": "any(max#dest_node)", "as": "dest_node"},
-        //         {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"}
-        //         ]
-        //     },
-        //     {
-        //         "level": "cross",
-        //         "select":
-        //         [
-        //         {"expr": "any(any#max#src_rank)", "as": "src_rank"},
-        //         {"expr": "any(any#max#dest_rank)", "as": "dest_rank"},
-        //         {"expr": "any(any#max#src_node)", "as": "src_node"},
-        //         {"expr": "any(any#max#dest_node)", "as": "dest_node"},
-        //         {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"}
-        //         ]
-        //     }
-        //     ]
-        // }
-        // )json";
-
         mgr[message].add_option_spec(src_dest_attributes);
         mgr[message].set_default_parameter("pingpong_attributes", "true");
         adiak::value("message_size", message);
@@ -322,10 +288,12 @@ int main(int argc, char **argv)
 
             double total_time = 0.0;
             int warmup = 1;
+#if defined(USE_OPENMP)
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
             memset(send_buf, 'a', message);
             memset(recv_buf, 0, message);
+#endif
 
 #if defined(USE_CALIPER)
             CALI_MARK_BEGIN(warmup_region);
@@ -335,14 +303,18 @@ int main(int argc, char **argv)
             {
                 if (rank == 0)
                 {
+#if defined(USE_OPENMP)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
+#endif
                 }
                 else if (rank == partner_rank)
                 {
+#if defined(USE_OPENMP)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#endif
                 }
             }
 
@@ -356,26 +328,32 @@ int main(int argc, char **argv)
                 if (rank == 0)
                 {
                     double start = MPI_Wtime();
+#if defined(USE_OPENMP)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
+#endif
                     double end = MPI_Wtime();
                     double rtt = end - start;
                     total_time += rtt;
-                    //printf("Round %d: Time = %f sec\n", i+1, rtt);
                 }
                 else if (rank == partner_rank)
                 {
+#if defined(USE_OPENMP)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#endif
                 }
             }
 
 #if defined(USE_CALIPER)
             CALI_MARK_END(region_label.c_str());
 #endif
+
+#if defined(USE_OPENMP)
             free(send_buf);
             free(recv_buf);
+#endif
         }
 
 #if defined(USE_CALIPER)

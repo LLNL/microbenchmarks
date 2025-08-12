@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 
+option(USE_OPENMP "Use OpenMP" OFF)
+
 project(pingpong)
 
 find_package(MPI REQUIRED)
@@ -19,4 +21,9 @@ if (USE_CALIPER)
 
     target_link_libraries(pingpong caliper)
     target_link_libraries(pingpong adiak::adiak)
+endif ()
+
+if (USE_OPENMP)
+    target_compile_options(${pingpong} PRIVATE -DUSE_OPENMP)
+    message(STATUS "OpenMP on")
 endif ()
