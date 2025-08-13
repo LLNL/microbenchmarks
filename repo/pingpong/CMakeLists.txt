@@ -24,6 +24,6 @@ if (USE_CALIPER)
 endif ()
 
 if (USE_OPENMP)
-    target_compile_options(${pingpong} PRIVATE -DUSE_OPENMP)
+    target_compile_definitions(pingpong PRIVATE -DUSE_OPENMP)
     message(STATUS "OpenMP on")
 endif ()
