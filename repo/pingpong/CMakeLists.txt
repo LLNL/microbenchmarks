@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-option(USE_OPENMP "Use OpenMP" OFF)
+option(USE_ROCM "Use Rocm" OFF)
 
 project(pingpong)
 
@@ -23,7 +23,9 @@ if (USE_CALIPER)
     target_link_libraries(pingpong adiak::adiak)
 endif ()
 
-if (USE_OPENMP)
-    target_compile_definitions(pingpong PRIVATE -DUSE_OPENMP)
-    message(STATUS "OpenMP on")
+if (USE_ROCM)
+    include_directories(${ROCM_PATH}/include)    
+    target_compile_options(${pingpong} PRIVATE -x rocm -DUSE_ROCM --offload-arch=${ROCM_ARCH})
+    message(STATUS "Rocm on")
+    target_link_libraries(pingpong "-L${ROCM_PATH}/lib -lamdhip64")
 endif ()

@@ -25,6 +25,12 @@
 #define CALI_MARK_END
 #endif
 
+#if defined(USE_ROCM)
+#include <hip/hip_runtime.h>
+#include <hip/hip_runtime_api.h>
+#endif
+
+
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
                                   int size)
 {
@@ -288,7 +294,22 @@ int main(int argc, char **argv)
 
             double total_time = 0.0;
             int warmup = 1;
-#if defined(USE_OPENMP)
+
+#if defined(USE_ROCM)
+            char *send_buf;
+            char *recv_buf;
+
+            hipError_t err1 = hipMalloc((void**)&send_buf, message);
+            hipError_t err2 = hipMalloc((void**)&recv_buf, message);
+
+            if (err1 != hipSuccess || err2 != hipSuccess) {
+                fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(err1), hipGetErrorString(err2));
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+
+            hipMemset(send_buf, 'a', message);
+            hipMemset(recv_buf, 0, message);
+#else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
             memset(send_buf, 'a', message);
@@ -303,18 +324,14 @@ int main(int argc, char **argv)
             {
                 if (rank == 0)
                 {
-#if defined(USE_OPENMP)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
-#endif
                 }
                 else if (rank == partner_rank)
                 {
-#if defined(USE_OPENMP)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-#endif
                 }
             }
 
@@ -328,21 +345,17 @@ int main(int argc, char **argv)
                 if (rank == 0)
                 {
                     double start = MPI_Wtime();
-#if defined(USE_OPENMP)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
-#endif
                     double end = MPI_Wtime();
                     double rtt = end - start;
                     total_time += rtt;
                 }
                 else if (rank == partner_rank)
                 {
-#if defined(USE_OPENMP)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-#endif
                 }
             }
 
@@ -350,7 +363,10 @@ int main(int argc, char **argv)
             CALI_MARK_END(region_label.c_str());
 #endif
 
-#if defined(USE_OPENMP)
+#if defined(USE_ROCM)
+            hipFree(send_buf);
+            hipFree(recv_buf);
+#else
             free(send_buf);
             free(recv_buf);
 #endif
