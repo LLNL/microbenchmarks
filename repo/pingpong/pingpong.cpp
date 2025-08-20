@@ -307,8 +307,10 @@ int main(int argc, char **argv)
                 MPI_Abort(MPI_COMM_WORLD, 1);
             }
 
-            hipMemset(send_buf, 'a', message);
-            hipMemset(recv_buf, 0, message);
+            hipError_t cuerr1 = hipMemset(send_buf, 'a', message);
+            assert(cuerr1 == hipSuccess);
+            hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
+            assert(cuerr2 = hipSuccess);
 #else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
