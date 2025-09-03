@@ -170,6 +170,8 @@ int main(int argc, char **argv)
                                CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t message_size_attr = cali_create_attribute("message_size_bytes",
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t rtt_attr = cali_create_attribute("rtt_seconds",
+                        CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -187,7 +189,10 @@ int main(int argc, char **argv)
                 {"expr": "any(max#dest_rank)", "as": "dest_rank"},
                 {"expr": "any(max#src_node)", "as": "src_node"},
                 {"expr": "any(max#dest_node)", "as": "dest_node"},
-                {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"}
+                {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"},
+                {"expr": "avg#rtt_seconds", "as": "avg_rtt_seconds"},
+                {"expr": "min#rtt_seconds", "as": "min_rtt_seconds"},
+                {"expr": "max#rtt_seconds", "as": "max_rtt_seconds"}
                 ]
             },
             {
@@ -198,7 +203,10 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#dest_rank)", "as": "dest_rank"},
                 {"expr": "any(any#max#src_node)", "as": "src_node"},
                 {"expr": "any(any#max#dest_node)", "as": "dest_node"},
-                {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"}
+                {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"},
+                {"expr": "avg#rtt_seconds", "as": "avg_rtt_seconds"},
+                {"expr": "min#rtt_seconds", "as": "min_rtt_seconds"},
+                {"expr": "max#rtt_seconds", "as": "max_rtt_seconds"}
                 ]
             }
             ]
@@ -353,6 +361,11 @@ int main(int argc, char **argv)
                     double end = MPI_Wtime();
                     double rtt = end - start;
                     total_time += rtt;
+#if defined(USE_CALIPER)
+                    CALI_MARK_BEGIN("iter");
+                    cali_set_double(rtt_attr, rtt);
+                    CALI_MARK_END("iter");
+#endif
                 }
                 else if (rank == partner_rank)
                 {
