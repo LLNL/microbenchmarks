@@ -6,6 +6,9 @@ option(USE_CALIPER "Use Caliper" OFF)
 
 add_executable(pingpong pingpong.cpp)
 
+find_package(MPI REQUIRED)
+target_link_libraries(pingpong PRIVATE MPI::MPI_CXX)
+
 if (USE_CALIPER)
     add_definitions(-DUSE_CALIPER)  
     find_package(caliper)
@@ -24,8 +27,4 @@ if (USE_ROCM)
     target_compile_definitions(pingpong PRIVATE USE_ROCM)
     target_link_libraries(pingpong PRIVATE hip::amdhip64)
     message(STATUS "Rocm on")
-else()
-    find_package(MPI REQUIRED)
-    include_directories(${MPI_INCLUDE_PATH})
-    target_link_libraries(pingpong PRIVATE ${MPI_CXX_LIBRARIES})
 endif()
