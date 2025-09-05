@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cmath>
+#include <limits>
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -170,8 +171,14 @@ int main(int argc, char **argv)
                                CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t message_size_attr = cali_create_attribute("message_size_bytes",
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t rtt_attr = cali_create_attribute("rtt_seconds",
-                        CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t avg_rtt_attr = cali_create_attribute("avg_rtt_seconds",
+                             CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t min_rtt_attr = cali_create_attribute("min_rtt_seconds",
+                             CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t max_rtt_attr = cali_create_attribute("max_rtt_seconds",
+                             CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t iter_attr = cali_create_attribute("iterations",
+                             CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -190,9 +197,10 @@ int main(int argc, char **argv)
                 {"expr": "any(max#src_node)", "as": "src_node"},
                 {"expr": "any(max#dest_node)", "as": "dest_node"},
                 {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"},
-                {"expr": "avg#rtt_seconds", "as": "avg_rtt_seconds"},
-                {"expr": "min#rtt_seconds", "as": "min_rtt_seconds"},
-                {"expr": "max#rtt_seconds", "as": "max_rtt_seconds"}
+                {"expr": "any(max#avg_rtt_seconds)", "as": "avg_rtt_seconds"},
+                {"expr": "any(max#min_rtt_seconds)", "as": "min_rtt_seconds"},
+                {"expr": "any(max#max_rtt_seconds)", "as": "max_rtt_seconds"},
+                {"expr": "any(max#iterations)", "as": "iterations"}
                 ]
             },
             {
@@ -204,9 +212,10 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#src_node)", "as": "src_node"},
                 {"expr": "any(any#max#dest_node)", "as": "dest_node"},
                 {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"},
-                {"expr": "avg#rtt_seconds", "as": "avg_rtt_seconds"},
-                {"expr": "min#rtt_seconds", "as": "min_rtt_seconds"},
-                {"expr": "max#rtt_seconds", "as": "max_rtt_seconds"}
+                {"expr": "any(any#max#avg_rtt_seconds)", "as": "avg_rtt_seconds"},
+                {"expr": "any(any#max#min_rtt_seconds)", "as": "min_rtt_seconds"},
+                {"expr": "any(any#max#max_rtt_seconds)", "as": "max_rtt_seconds"},
+                {"expr": "any(any#max#iterations)", "as": "iterations"}
                 ]
             }
             ]
@@ -318,7 +327,7 @@ int main(int argc, char **argv)
             hipError_t cuerr1 = hipMemset(send_buf, 'a', message);
             assert(cuerr1 == hipSuccess);
             hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
-            assert(cuerr2 = hipSuccess);
+            assert(cuerr2 == hipSuccess);
 #else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
@@ -350,6 +359,11 @@ int main(int argc, char **argv)
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
+            double sum_rtt = 0.0;
+            double min_rtt = std::numeric_limits<double>::infinity();
+            double max_rtt = 0.0;
+            int iters = 0;
+
             for (int i = 0; i < PING_PONG_LIMIT; i++)
             {
                 if (rank == 0)
@@ -360,18 +374,32 @@ int main(int argc, char **argv)
                              MPI_STATUS_IGNORE);
                     double end = MPI_Wtime();
                     double rtt = end - start;
-                    total_time += rtt;
-#if defined(USE_CALIPER)
-                    CALI_MARK_BEGIN("iter");
-                    cali_set_double(rtt_attr, rtt);
-                    CALI_MARK_END("iter");
-#endif
+                    sum_rtt += rtt;
+                    if (rtt < min_rtt) min_rtt = rtt;
+                    if (rtt > max_rtt) max_rtt = rtt;
+                    ++iters;
                 }
                 else if (rank == partner_rank)
                 {
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
                 }
+            }
+            
+            if (rank == 0)
+            {
+                double avg_rtt = 0.0;
+                if (iters > 0) {
+                    avg_rtt = sum_rtt / iters;
+                } else {
+                    avg_rtt = 0.0;
+                }
+#if defined(USE_CALIPER)
+                cali_set_double(avg_rtt_attr, avg_rtt);
+                cali_set_double(min_rtt_attr, min_rtt);
+                cali_set_double(max_rtt_attr, max_rtt);
+                cali_set_int(iter_attr, iters);
+#endif
             }
 
 #if defined(USE_CALIPER)
