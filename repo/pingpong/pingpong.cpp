@@ -399,11 +399,14 @@ int main(int argc, char **argv)
             {
                 double avg_rtt = 0.0;
                 double stddev_rtt = 0.0;
-                double safe_min = 0.0, safe_max = 0.0;
                 if (iters > 0) {
                     avg_rtt = sum_rtt / iters;
+                    min_rtt = min_rtt;
+                    max_rtt = max_rtt;
                     double mean_sq = sumsq_rtt / iters;
-                    stddev_rtt = std::sqrt(mean_sq - avg_rtt * avg_rtt);
+                    double var = mean_sq - avg_rtt * avg_rtt;
+                    if (var < 0.0) var = 0.0;
+                    stddev_rtt = std::sqrt(var);
                 } else {
                     avg_rtt = 0.0;
                     stddev_rtt = 0.0;
