@@ -179,6 +179,9 @@ int main(int argc, char **argv)
                              CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t iter_attr = cali_create_attribute("iterations",
                              CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t std_rtt_attr = cali_create_attribute("std_rtt_seconds",
+                                CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+
 
     const char *src_dest_attributes = R"json(
         {
@@ -200,6 +203,7 @@ int main(int argc, char **argv)
                 {"expr": "any(max#avg_rtt_seconds)", "as": "avg_rtt_seconds"},
                 {"expr": "any(max#min_rtt_seconds)", "as": "min_rtt_seconds"},
                 {"expr": "any(max#max_rtt_seconds)", "as": "max_rtt_seconds"},
+                {"expr": "any(max#std_rtt_seconds)", "as": "std_rtt_seconds"},
                 {"expr": "any(max#iterations)", "as": "iterations"}
                 ]
             },
@@ -215,6 +219,7 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#avg_rtt_seconds)", "as": "avg_rtt_seconds"},
                 {"expr": "any(any#max#min_rtt_seconds)", "as": "min_rtt_seconds"},
                 {"expr": "any(any#max#max_rtt_seconds)", "as": "max_rtt_seconds"},
+                {"expr": "any(any#max#std_rtt_seconds)", "as": "std_rtt_seconds"},
                 {"expr": "any(any#max#iterations)", "as": "iterations"}
                 ]
             }
@@ -360,6 +365,7 @@ int main(int argc, char **argv)
 #endif
 
             double sum_rtt = 0.0;
+            double sumsq_rtt = 0.0;
             double min_rtt = std::numeric_limits<double>::infinity();
             double max_rtt = 0.0;
             int iters = 0;
@@ -374,7 +380,10 @@ int main(int argc, char **argv)
                              MPI_STATUS_IGNORE);
                     double end = MPI_Wtime();
                     double rtt = end - start;
+
                     sum_rtt += rtt;
+                    sumsq_rtt += rtt * rtt;
+
                     if (rtt < min_rtt) min_rtt = rtt;
                     if (rtt > max_rtt) max_rtt = rtt;
                     ++iters;
@@ -389,16 +398,22 @@ int main(int argc, char **argv)
             if (rank == 0)
             {
                 double avg_rtt = 0.0;
+                double stddev_rtt = 0.0;
+                double safe_min = 0.0, safe_max = 0.0;
                 if (iters > 0) {
                     avg_rtt = sum_rtt / iters;
+                    double mean_sq = sumsq_rtt / iters;
+                    stddev_rtt = std::sqrt(mean_sq - avg_rtt * avg_rtt);
                 } else {
                     avg_rtt = 0.0;
+                    stddev_rtt = 0.0;
                 }
 #if defined(USE_CALIPER)
                 cali_set_double(avg_rtt_attr, avg_rtt);
                 cali_set_double(min_rtt_attr, min_rtt);
                 cali_set_double(max_rtt_attr, max_rtt);
                 cali_set_int(iter_attr, iters);
+                cali_set_double(std_rtt_attr, stddev_rtt);
 #endif
             }
 
