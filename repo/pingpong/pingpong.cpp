@@ -13,6 +13,7 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include <assert.h>
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -30,6 +31,18 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 #endif
+
+#if defined(USE_CUDA)
+  #include <cuda_runtime.h>
+  inline void cuda_check(cudaError_t e) {
+    if (e != cudaSuccess) {
+      fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(e));
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+  }
+#endif
+
+
 
 
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
@@ -333,6 +346,13 @@ int main(int argc, char **argv)
             assert(cuerr1 == hipSuccess);
             hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
             assert(cuerr2 == hipSuccess);
+#elif defined(USE_CUDA)
+    char *send_buf = nullptr;
+    char *recv_buf = nullptr;
+    cuda_check(cudaMalloc((void**)&send_buf, message));
+    cuda_check(cudaMalloc((void**)&recv_buf, message));
+    cuda_check(cudaMemset(send_buf, 'a', message));
+    cuda_check(cudaMemset(recv_buf, 0, message));
 #else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
@@ -427,6 +447,10 @@ int main(int argc, char **argv)
 #if defined(USE_ROCM)
             hipFree(send_buf);
             hipFree(recv_buf);
+
+#elif defined(USE_CUDA)
+            cuda_check(cudaFree(send_buf));
+            cuda_check(cudaFree(recv_buf));
 #else
             free(send_buf);
             free(recv_buf);
