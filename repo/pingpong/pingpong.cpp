@@ -358,13 +358,11 @@ int main(int argc, char **argv)
     cuda_check(cudaMemset(d_send, 'a', message));
     cuda_check(cudaMemset(d_recv, 0, message));
 
-#if defined(USE_CUDA_STAGING)
     char *h_send = nullptr, *h_recv = nullptr;
     cuda_check(cudaMallocHost((void**)&h_send, message));
     cuda_check(cudaMallocHost((void**)&h_recv, message));
     memset(h_send, 'a', message);
     memset(h_recv, 0, message);
-#endif
 
 #else
     char *send_buf = (char *)malloc(message);
@@ -382,15 +380,10 @@ int main(int argc, char **argv)
                 if (rank == 0)
                 {
 #if defined(USE_CUDA)
-    #if defined(USE_CUDA_STAGING)
                     cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                     MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-    #else
-                    MPI_Send(d_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(d_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    #endif
 #elif defined(USE_ROCM)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -402,15 +395,10 @@ int main(int argc, char **argv)
                 else if (rank == partner_rank)
                 {
 #if defined(USE_CUDA)
-    #if defined(USE_CUDA_STAGING)
                     MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
                     cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                     MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-    #else
-                    MPI_Recv(d_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(d_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-    #endif
 #elif defined(USE_ROCM)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
@@ -438,15 +426,10 @@ int main(int argc, char **argv)
                 {
 #if defined(USE_CUDA)
                     double start = MPI_Wtime();
-    #if defined(USE_CUDA_STAGING)
                     cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                     MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-    #else
-                    MPI_Send(d_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(d_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    #endif
                     double end = MPI_Wtime();
 #else
                     double start = MPI_Wtime();
@@ -466,18 +449,10 @@ int main(int argc, char **argv)
                 else if (rank == partner_rank)
                 {
 #if defined(USE_CUDA)
-    #if defined(USE_CUDA_STAGING)
                     MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
                     cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                     MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-    #else
-                    MPI_Recv(d_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(d_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-    #endif
-#elif defined(USE_ROCM)
-                    MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #else
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
@@ -519,10 +494,8 @@ int main(int argc, char **argv)
             hipFree(recv_buf);
 
 #elif defined(USE_CUDA)
-    #if defined(USE_CUDA_STAGING)
             cuda_check(cudaFreeHost(h_send));
             cuda_check(cudaFreeHost(h_recv));
-    #endif
             cuda_check(cudaFree(d_send));
             cuda_check(cudaFree(d_recv));
 #else
