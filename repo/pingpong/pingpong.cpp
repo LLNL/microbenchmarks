@@ -1,7 +1,7 @@
+#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <mpi.h>
 #include <string.h>
 #include <string>
 #include <vector>
@@ -30,6 +30,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 #endif
+
 
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
                                   int size)
@@ -277,6 +278,40 @@ int main(int argc, char **argv)
                               "),metadata(file=/etc/node_info.json,keys=\"host.os\")";
 
         cali_set_int(message_size_attr, message);
+
+        // const char *src_dest_attributes = R"json(
+        // {
+        //     "name": "pingpong_attributes",
+        //     "type": "boolean",
+        //     "category": "metric",
+        //     "description": "Collect pingpong attributes",
+        //     "query":
+        //     [
+        //     {
+        //         "level": "local",
+        //         "select":
+        //         [
+        //         {"expr": "any(max#src_rank)", "as": "src_rank"},
+        //         {"expr": "any(max#dest_rank)", "as": "dest_rank"},
+        //         {"expr": "any(max#src_node)", "as": "src_node"},
+        //         {"expr": "any(max#dest_node)", "as": "dest_node"},
+        //         {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"}
+        //         ]
+        //     },
+        //     {
+        //         "level": "cross",
+        //         "select":
+        //         [
+        //         {"expr": "any(any#max#src_rank)", "as": "src_rank"},
+        //         {"expr": "any(any#max#dest_rank)", "as": "dest_rank"},
+        //         {"expr": "any(any#max#src_node)", "as": "src_node"},
+        //         {"expr": "any(any#max#dest_node)", "as": "dest_node"},
+        //         {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"}
+        //         ]
+        //     }
+        //     ]
+        // }
+        // )json";
 
         mgr[message].add_option_spec(src_dest_attributes);
         mgr[message].set_default_parameter("pingpong_attributes", "true");
