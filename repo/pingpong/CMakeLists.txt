@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(pingpong)
+project(pingpong LANGUAGES CXX)
 
-find_package(MPI REQUIRED)
-include_directories(${MPI_INCLUDE_PATH})
+option(USE_ROCM "Use Rocm" OFF)
+option(USE_CALIPER "Use Caliper" OFF)
 
 add_executable(pingpong pingpong.cpp)
 
-target_link_libraries(pingpong ${MPI_CXX_LIBRARIES})
+find_package(MPI REQUIRED)
+target_link_libraries(pingpong PRIVATE MPI::MPI_CXX)
 
 if (USE_CALIPER)
     add_definitions(-DUSE_CALIPER)
@@ -17,6 +18,14 @@ if (USE_CALIPER)
     include_directories(${adiak_INCLUDE_DIRS})
     message(STATUS "Caliper on")
 
-    target_link_libraries(pingpong caliper)
-    target_link_libraries(pingpong adiak::adiak)
-endif ()
+    target_link_libraries(pingpong PRIVATE caliper)
+    target_link_libraries(pingpong PRIVATE adiak::adiak)
+endif()
+
+if (USE_ROCM)
+    find_package(hip CONFIG REQUIRED)
+    add_definitions(-D__HIP_PLATFORM_AMD__)
+    target_compile_definitions(pingpong PRIVATE USE_ROCM)
+    target_link_libraries(pingpong PRIVATE hip::amdhip64)
+    message(STATUS "Rocm on")
+endif()

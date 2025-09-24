@@ -25,6 +25,12 @@
 #define CALI_MARK_END
 #endif
 
+#if defined(USE_ROCM)
+#include <hip/hip_runtime.h>
+#include <hip/hip_runtime_api.h>
+#endif
+
+
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
                                   int size)
 {
@@ -322,10 +328,29 @@ int main(int argc, char **argv)
 
             double total_time = 0.0;
             int warmup = 1;
+
+#if defined(USE_ROCM)
+            char *send_buf;
+            char *recv_buf;
+
+            hipError_t err1 = hipMalloc((void**)&send_buf, message);
+            hipError_t err2 = hipMalloc((void**)&recv_buf, message);
+
+            if (err1 != hipSuccess || err2 != hipSuccess) {
+                fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(err1), hipGetErrorString(err2));
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+
+            hipError_t cuerr1 = hipMemset(send_buf, 'a', message);
+            assert(cuerr1 == hipSuccess);
+            hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
+            assert(cuerr2 = hipSuccess);
+#else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
             memset(send_buf, 'a', message);
             memset(recv_buf, 0, message);
+#endif
 
 #if defined(USE_CALIPER)
             CALI_MARK_BEGIN(warmup_region);
@@ -374,8 +399,14 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
             CALI_MARK_END(region_label.c_str());
 #endif
+
+#if defined(USE_ROCM)
+            hipFree(send_buf);
+            hipFree(recv_buf);
+#else
             free(send_buf);
             free(recv_buf);
+#endif
         }
 
 #if defined(USE_CALIPER)
