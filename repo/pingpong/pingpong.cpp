@@ -328,28 +328,27 @@ int main(int argc, char **argv)
             assert(cuerr2 = hipSuccess);
             assert(cuerr2 == hipSuccess);
 #elif defined(USE_CUDA)
-    int dev_count = 0;
-    cuda_check(cudaGetDeviceCount(&dev_count));
-    cuda_check(cudaSetDevice(rank % (dev_count > 0 ? dev_count : 1)));
+            int dev_count = 0;
+            cuda_check(cudaGetDeviceCount(&dev_count));
+            cuda_check(cudaSetDevice(rank % (dev_count > 0 ? dev_count : 1)));
 
-    char *d_send = nullptr;
-    char *d_recv = nullptr;
-    cuda_check(cudaMalloc((void**)&d_send, message));
-    cuda_check(cudaMalloc((void**)&d_recv, message));
-    cuda_check(cudaMemset(d_send, 'a', message));
-    cuda_check(cudaMemset(d_recv, 0, message));
+            char *d_send = nullptr;
+            char *d_recv = nullptr;
+            cuda_check(cudaMalloc((void**)&d_send, message));
+            cuda_check(cudaMalloc((void**)&d_recv, message));
+            cuda_check(cudaMemset(d_send, 'a', message));
+            cuda_check(cudaMemset(d_recv, 0, message));
 
-    char *h_send = nullptr, *h_recv = nullptr;
-    cuda_check(cudaMallocHost((void**)&h_send, message));
-    cuda_check(cudaMallocHost((void**)&h_recv, message));
-    memset(h_send, 'a', message);
-    memset(h_recv, 0, message);
-
+            char *h_send = nullptr, *h_recv = nullptr;
+            cuda_check(cudaMallocHost((void**)&h_send, message));
+            cuda_check(cudaMallocHost((void**)&h_recv, message));
+            memset(h_send, 'a', message);
+            memset(h_recv, 0, message);
 #else
-    char *send_buf = (char *)malloc(message);
-    char *recv_buf = (char *)malloc(message);
-    memset(send_buf, 'a', message);
-    memset(recv_buf, 0, message);
+            char *send_buf = (char *)malloc(message);
+            char *recv_buf = (char *)malloc(message);
+            memset(send_buf, 'a', message);
+            memset(recv_buf, 0, message);
 #endif
 
 #if defined(USE_CALIPER)
@@ -436,7 +435,6 @@ int main(int argc, char **argv)
 #if defined(USE_ROCM)
             hipFree(send_buf);
             hipFree(recv_buf);
-
 #elif defined(USE_CUDA)
             cuda_check(cudaFreeHost(h_send));
             cuda_check(cudaFreeHost(h_recv));
