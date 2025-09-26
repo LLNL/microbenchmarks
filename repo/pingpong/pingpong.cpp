@@ -173,7 +173,6 @@ int main(int argc, char **argv)
     cali_id_t message_size_attr = cali_create_attribute("message_size_bytes",
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
-
     const char *src_dest_attributes = R"json(
         {
             "name": "pingpong_attributes",
@@ -345,7 +344,6 @@ int main(int argc, char **argv)
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-
             for (int i = 0; i < PING_PONG_LIMIT; i++)
             {
                 if (rank == 0)
@@ -364,7 +362,6 @@ int main(int argc, char **argv)
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
                 }
             }
-            
 
 #if defined(USE_CALIPER)
             CALI_MARK_END(region_label.c_str());
