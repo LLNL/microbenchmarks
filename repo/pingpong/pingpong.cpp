@@ -13,6 +13,7 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include <assert.h>
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -31,6 +32,15 @@
 #include <hip/hip_runtime_api.h>
 #endif
 
+#if defined(USE_CUDA)
+#include <cuda_runtime.h>
+inline void cuda_check(cudaError_t e) {
+    if (e != cudaSuccess) {
+        fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(e));
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+}
+#endif
 
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
                                   int size)
@@ -312,7 +322,24 @@ int main(int argc, char **argv)
             hipError_t cuerr1 = hipMemset(send_buf, 'a', message);
             assert(cuerr1 == hipSuccess);
             hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
-            assert(cuerr2 = hipSuccess);
+            assert(cuerr2 == hipSuccess);
+#elif defined(USE_CUDA)
+            int dev_count = 0;
+            cuda_check(cudaGetDeviceCount(&dev_count));
+            cuda_check(cudaSetDevice(rank % (dev_count > 0 ? dev_count : 1)));
+
+            char *d_send = nullptr;
+            char *d_recv = nullptr;
+            cuda_check(cudaMalloc((void**)&d_send, message));
+            cuda_check(cudaMalloc((void**)&d_recv, message));
+            cuda_check(cudaMemset(d_send, 'a', message));
+            cuda_check(cudaMemset(d_recv, 0, message));
+
+            char *h_send = nullptr, *h_recv = nullptr;
+            cuda_check(cudaMallocHost((void**)&h_send, message));
+            cuda_check(cudaMallocHost((void**)&h_recv, message));
+            memset(h_send, 'a', message);
+            memset(h_recv, 0, message);
 #else
             char *send_buf = (char *)malloc(message);
             char *recv_buf = (char *)malloc(message);
@@ -328,14 +355,34 @@ int main(int argc, char **argv)
             {
                 if (rank == 0)
                 {
+#if defined(USE_ROCM)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
+#elif defined(USE_CUDA)
+                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                    MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                    MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+#else
+                    MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                    MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif
                 }
                 else if (rank == partner_rank)
                 {
+#if defined(USE_ROCM)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#elif defined(USE_CUDA)
+                    MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                    MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#else
+                    MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#endif
                 }
             }
 
@@ -348,18 +395,34 @@ int main(int argc, char **argv)
             {
                 if (rank == 0)
                 {
+#if defined(USE_CUDA)
+                    double start = MPI_Wtime();
+                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                    MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                    MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                    double end = MPI_Wtime();
+#else
                     double start = MPI_Wtime();
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
                     double end = MPI_Wtime();
+#endif
                     double rtt = end - start;
                     total_time += rtt;
                 }
                 else if (rank == partner_rank)
                 {
+#if defined(USE_CUDA)
+                    MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                    MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#else
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+#endif
                 }
             }
 
@@ -370,6 +433,11 @@ int main(int argc, char **argv)
 #if defined(USE_ROCM)
             hipFree(send_buf);
             hipFree(recv_buf);
+#elif defined(USE_CUDA)
+            cuda_check(cudaFreeHost(h_send));
+            cuda_check(cudaFreeHost(h_recv));
+            cuda_check(cudaFree(d_send));
+            cuda_check(cudaFree(d_recv));
 #else
             free(send_buf);
             free(recv_buf);
