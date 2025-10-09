@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.12)
 
 project(pingpong LANGUAGES CXX)
 
-option(USE_ROCM "Use Rocm" OFF)
+option(USE_HIP "Use HIP" OFF)
 option(USE_CUDA "Use CUDA" OFF)
 option(USE_CALIPER "Use Caliper" OFF)
 
@@ -23,10 +23,10 @@ if (USE_CALIPER)
     target_link_libraries(pingpong PRIVATE adiak::adiak)
 endif()
 
-if (USE_ROCM)
+if (USE_HIP)
     find_package(hip CONFIG REQUIRED)
     add_definitions(-D__HIP_PLATFORM_AMD__)
-    target_compile_definitions(pingpong PRIVATE USE_ROCM)
+    target_compile_definitions(pingpong PRIVATE USE_HIP)
     target_link_libraries(pingpong PRIVATE hip::amdhip64)
     message(STATUS "Rocm on")
 endif()
