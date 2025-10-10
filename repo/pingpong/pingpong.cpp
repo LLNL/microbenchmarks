@@ -183,8 +183,12 @@ int main(int argc, char **argv)
                                CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t message_size_attr = cali_create_attribute("message_size_bytes",
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t comm_phase_attr = cali_create_attribute("comm_phase", CALI_TYPE_STRING, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t iter_time_sec_attr = cali_create_attribute("iter_time_sec", CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t comm_phase_attr = cali_create_attribute("comm_phase", CALI_TYPE_STRING,
+                                CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t aa_time_sec_attr = cali_create_attribute("aa_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t pp_time_sec_attr = cali_create_attribute("pp_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -204,9 +208,12 @@ int main(int argc, char **argv)
                 {"expr": "any(max#dest_node)", "as": "dest_node"},
                 {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"},
                 {"expr": "any(max#comm_phase)", "as" : "comm_phase"},
-                {"expr": "avg(iter_time_sec)", "as" : "iter_avg_s"},
-                {"expr": "max(iter_time_sec)", "as" : "iter_max_s"},
-                {"expr": "min(iter_time_sec)", "as" : "iter_min_s"}
+                {"expr": "avg(aa_time_sec)", "as" : "aa_avg_s"},
+                {"expr": "max(aa_time_sec)", "as" : "aa_max_s"},
+                {"expr": "min(aa_time_sec)", "as" : "aa_min_s"},
+                {"expr": "avg(pp_time_sec)", "as" : "pp_avg_s"},
+                {"expr": "max(pp_time_sec)", "as" : "pp_max_s"},
+                {"expr": "min(pp_time_sec)", "as" : "pp_min_s"}
                 ]
             },
             {
@@ -219,9 +226,12 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#dest_node)", "as": "dest_node"},
                 {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"},
                 {"expr": "any(any#max#comm_phase)", "as": "comm_phase"},
-                {"expr": "avg(iter_time_sec)", "as" : "iter_avg_s"},
-                {"expr": "max(iter_time_sec)", "as" : "iter_max_s"},
-                {"expr": "min(iter_time_sec)", "as" : "iter_min_s"}
+                {"expr": "avg(aa_time_sec)", "as" : "aa_avg_s"},
+                {"expr": "max(aa_time_sec)", "as" : "aa_max_s"},
+                {"expr": "min(aa_time_sec)", "as" : "aa_min_s"},
+                {"expr": "avg(pp_time_sec)", "as" : "pp_avg_s"},
+                {"expr": "max(pp_time_sec)", "as" : "pp_max_s"},
+                {"expr": "min(pp_time_sec)", "as" : "pp_min_s"}
                 ]
             }
             ]
@@ -317,7 +327,6 @@ int main(int argc, char **argv)
 
             double total_time = 0.0;
             int warmup = 1;
-            double alltoall_total_time = 0.0;
 
 #if defined(USE_HIP)
             char *send_buf;
@@ -425,7 +434,7 @@ int main(int argc, char **argv)
                     total_time += rtt;
 #if defined(USE_CALIPER)
                     cali_set_string(comm_phase_attr, "pingpong");
-                    cali_set_double(iter_time_sec_attr, total_time);
+                    cali_set_double(pp_time_sec_attr, total_time);
 #endif
                 }
                 else if (rank == partner_rank)
@@ -457,152 +466,162 @@ int main(int argc, char **argv)
             free(send_buf);
             free(recv_buf);
 #endif
+        }
 
 //------------------------------------------------------------------------------------------------------------------------------------------------
         MPI_Barrier(MPI_COMM_WORLD);
 //------------------------------------------------------------------------------------------------------------------------------------------------
-        size_t aa_bytes_per_rank = static_cast<size_t>(message);
-        size_t aa_total_bytes = aa_bytes_per_rank * static_cast<size_t>(size);
+        for (int partner_rank : partners)
+        {
+            std::string region_label = region_names[partner_rank];
+
+            size_t aa_bytes_per_rank = static_cast<size_t>(message);
+            size_t aa_total_bytes = aa_bytes_per_rank * static_cast<size_t>(size);
+
+            int warmup = 1;
+            double alltoall_total_time = 0.0;
 
 #if defined(USE_HIP)
-        char *aa_send_buf;
-        char *aa_recv_buf;
+            char *aa_send_dev;
+            char *aa_recv_dev;
 
-        hipError_t a_err1 = hipMalloc((void**)&aa_send_buf, aa_total_bytes);
-        hipError_t a_err2 = hipMalloc((void**)&aa_recv_buf, aa_total_bytes);
+            hipError_t a_err1 = hipMalloc((void**)&aa_send_dev, aa_total_bytes);
+            hipError_t a_err2 = hipMalloc((void**)&aa_recv_dev, aa_total_bytes);
 
-        if (a_err1 != hipSuccess || a_err2 != hipSuccess) {
-            fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(a_err1), hipGetErrorString(a_err2));
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
+            if (a_err1 != hipSuccess || a_err2 != hipSuccess) {
+                fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(a_err1), hipGetErrorString(a_err2));
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
 
-        hipError_t a_cuerr1 = hipMemset(aa_send_buf, 'a', aa_total_bytes);
-        assert(a_cuerr1 == hipSuccess);
-        hipError_t a_cuerr2 = hipMemset(aa_recv_buf, 0, aa_total_bytes);
-        assert(a_cuerr2 == hipSuccess);
+            hipError_t a_cuerr1 = hipMemset(aa_send_dev, 'a', aa_total_bytes);
+            assert(a_cuerr1 == hipSuccess);
+            hipError_t a_cuerr2 = hipMemset(aa_recv_dev, 0, aa_total_bytes);
+            assert(a_cuerr2 == hipSuccess);
+
+            char *aa_send_host = (char*) malloc(aa_total_bytes);
+            char *aa_recv_host = (char*) malloc(aa_total_bytes);
+            memset(aa_send_host, 'a', aa_total_bytes);
+            memset(aa_recv_host, 0, aa_total_bytes);
 
 #elif defined(USE_CUDA)
-        int a_dev_count = 0;
-        cuda_check(cudaGetDeviceCount(&a_dev_count));
-        cuda_check(cudaSetDevice(rank % (a_dev_count > 0 ? a_dev_count : 1)));
+            int a_dev_count = 0;
+            cuda_check(cudaGetDeviceCount(&a_dev_count));
+            cuda_check(cudaSetDevice(rank % (a_dev_count > 0 ? a_dev_count : 1)));
 
-        char *ad_send = nullptr;
-        char *ad_recv = nullptr;
-        cuda_check(cudaMalloc((void**)&ad_send, aa_total_bytes));
-        cuda_check(cudaMalloc((void**)&ad_recv, aa_total_bytes));
-        cuda_check(cudaMemset(ad_send, 'a', aa_total_bytes));
-        cuda_check(cudaMemset(ad_recv, 0, aa_total_bytes));
+            char *ad_send = nullptr;
+            char *ad_recv = nullptr;
+            cuda_check(cudaMalloc((void**)&ad_send, aa_total_bytes));
+            cuda_check(cudaMalloc((void**)&ad_recv, aa_total_bytes));
+            cuda_check(cudaMemset(ad_send, 'a', aa_total_bytes));
+            cuda_check(cudaMemset(ad_recv, 0, aa_total_bytes));
 
-        char *ah_send = nullptr;
-        char *ah_recv = nullptr;
-        cuda_check(cudaMallocHost((void**)&ah_send, aa_total_bytes));
-        cuda_check(cudaMallocHost((void**)&ah_recv, aa_total_bytes));
-        memset(ah_send, 'a', aa_total_bytes);
-        memset(ah_recv, 0, aa_total_bytes);
+            char *ah_send = nullptr;
+            char *ah_recv = nullptr;
+            cuda_check(cudaMallocHost((void**)&ah_send, aa_total_bytes));
+            cuda_check(cudaMallocHost((void**)&ah_recv, aa_total_bytes));
+            memset(ah_send, 'a', aa_total_bytes);
+            memset(ah_recv, 0, aa_total_bytes);
 #else
-        char *aa_send = (char*) malloc(aa_total_bytes);
-        char *aa_recv = (char*) malloc(aa_total_bytes);
-        memset(aa_send, 'b', aa_total_bytes);
-        memset(aa_recv,  0, aa_total_bytes);
+            char *aa_send = (char*) malloc(aa_total_bytes);
+            char *aa_recv = (char*) malloc(aa_total_bytes);
+            memset(aa_send, 'b', aa_total_bytes);
+            memset(aa_recv,  0, aa_total_bytes);
 #endif
 
 #if defined(USE_CALIPER)
             CALI_MARK_BEGIN(warmup_region_aa);
 #endif
 
-        for (int i = 0; i < warmup; i++)
-        {
+            for (int i = 0; i < warmup; i++)
+            {
 #if defined(USE_HIP)
-            hipMemcpy(aa_send_dev, aa_send_host, aa_total_bytes, hipMemcpyHostToDevice);
-            hipDeviceSynchronize();
-            MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
-            hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
-            hipDeviceSynchronize();
+                hipMemcpy(aa_send_dev, aa_send_host, aa_total_bytes, hipMemcpyHostToDevice);
+                hipDeviceSynchronize();
+                MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
+                hipDeviceSynchronize();
 #elif defined(USE_CUDA)
-            cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
-            MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
-            cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
+                MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
 #else
-            MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
 #endif
-        }
+            }
 
 #if defined(USE_CALIPER)
             CALI_MARK_END(warmup_region_aa);
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-        for (int it = 0; it < PING_PONG_LIMIT; ++it) {
-            MPI_Barrier(MPI_COMM_WORLD); // sync before each timed iter
+            for (int it = 0; it < PING_PONG_LIMIT; ++it)
+            {
+                MPI_Barrier(MPI_COMM_WORLD);
 
-            double t0 = MPI_Wtime();
+                double t0 = MPI_Wtime();
 
 #if defined(USE_HIP)
-            hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
-            MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
-            hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
-            hipDeviceSynchronize();
+                hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
+                MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
+                hipDeviceSynchronize();
 #elif defined(USE_CUDA)
-            cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
-            MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
-            cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
+                MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
 #else
-            MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
 #endif
 
-            double t1 = MPI_Wtime();
-            double dt = t1 - t0;
+                double t1 = MPI_Wtime();
+                double dt = t1 - t0;
 
-            double iter_max = 0.0;
-            MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-            if (rank == 0)
-            {
-                alltoall_total_time += iter_max;
+                double iter_max = 0.0;
+                MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                {
+                    alltoall_total_time += iter_max;
 #if defined(USE_CALIPER)
-                cali_set_string(comm_phase_attr, "alltoall");
-                cali_set_double(iter_time_sec_attr, alltoall_total_time);
-#endif
+                    cali_set_string(comm_phase_attr, "alltoall");
+                    cali_set_double(aa_time_sec_attr, alltoall_total_time);
+#endif        
+                }
             }
-        }
 #if defined(USE_CALIPER)
             CALI_MARK_END(region_label.c_str());
 #endif
 
 #if defined(USE_HIP)
-        free(aa_send_host);
-        free(aa_recv_host);
-        hipFree(aa_send_dev);
-        hipFree(aa_recv_dev);
+            free(aa_send_host);
+            free(aa_recv_host);
+            hipFree(aa_send_dev);
+            hipFree(aa_recv_dev);
 #elif defined(USE_CUDA)
-        cuda_check(cudaFreeHost(ah_send));
-        cuda_check(cudaFreeHost(ah_recv));
-        cuda_check(cudaFree(ad_send));
-        cuda_check(cudaFree(ad_recv));
+            cuda_check(cudaFreeHost(ah_send));
+            cuda_check(cudaFreeHost(ah_recv));
+            cuda_check(cudaFree(ad_send));
+            cuda_check(cudaFree(ad_recv));
 #else
-        free(aa_send);
-        free(aa_recv);
+            free(aa_send);
+            free(aa_recv);
 #endif
-
         }
-
-        
 
 #if defined(USE_CALIPER)
         mgr[message].stop();
 #endif
-    }
 
 #if defined(USE_CALIPER)
-    if (rank == 0 && !all_comm_pairs.empty())
-    {
-        adiak::value("all_comm_pairs", all_comm_pairs);
-    }
-    for (auto &m : mgr)
-    {
-        m.second.flush();
-    }
+        if (rank == 0 && !all_comm_pairs.empty())
+        {
+            adiak::value("all_comm_pairs", all_comm_pairs);
+        }
+        for (auto &m : mgr)
+        {
+            m.second.flush();
+        }
 #endif
 
-    MPI_Finalize();
-    return 0;
-}
+        MPI_Finalize();
+        return 0;
+    }
