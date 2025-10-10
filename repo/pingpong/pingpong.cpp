@@ -106,6 +106,8 @@ int main(int argc, char **argv)
     std::string metadata;
     const char *warmup_region = "warmup";
     const char *warmup_region_aa = "warmup_aa";
+    const char *warmup_region_red = "warmup_red";
+    const char *warmup_region_ar = "warmup_ar";
 
     int opt;
     const char *usage =
@@ -197,6 +199,18 @@ int main(int argc, char **argv)
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t pp_min_time_sec_attr = cali_create_attribute("pp_min_time_sec", CALI_TYPE_DOUBLE,
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t red_avg_time_sec_attr = cali_create_attribute("red_avg_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t red_max_time_sec_attr = cali_create_attribute("red_max_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t red_min_time_sec_attr = cali_create_attribute("red_min_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t ar_avg_time_sec_attr  = cali_create_attribute("ar_avg_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t ar_max_time_sec_attr  = cali_create_attribute("ar_max_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t ar_min_time_sec_attr  = cali_create_attribute("ar_min_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -220,7 +234,13 @@ int main(int argc, char **argv)
                 {"expr": "any(max#aa_min_time_sec)", "as" : "aa_min_s"},
                 {"expr": "any(max#pp_avg_time_sec)", "as" : "pp_avg_s"},
                 {"expr": "any(max#pp_max_time_sec)", "as" : "pp_max_s"},
-                {"expr": "any(max#pp_min_time_sec)", "as" : "pp_min_s"}
+                {"expr": "any(max#pp_min_time_sec)", "as" : "pp_min_s"},
+                {"expr": "any(max#red_avg_time_sec)", "as" : "red_avg_s"},
+                {"expr": "any(max#red_max_time_sec)", "as" : "red_max_s"},
+                {"expr": "any(max#red_min_time_sec)", "as" : "red_min_s"},
+                {"expr": "any(max#ar_avg_time_sec)", "as" : "ar_avg_s"},
+                {"expr": "any(max#ar_max_time_sec)", "as" : "ar_max_s"},
+                {"expr": "any(max#ar_min_time_sec)", "as" : "ar_min_s"}
                 ],
                 "group by": ["comm_phase"],
             },
@@ -238,7 +258,13 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#aa_min_time_sec)", "as" : "aa_min_s"},
                 {"expr": "any(any#max#pp_avg_time_sec)", "as" : "pp_avg_s"},
                 {"expr": "any(any#max#pp_max_time_sec)", "as" : "pp_max_s"},
-                {"expr": "any(any#max#pp_min_time_sec)", "as" : "pp_min_s"}
+                {"expr": "any(any#max#pp_min_time_sec)", "as" : "pp_min_s"},
+                {"expr": "any(any#max#red_avg_time_sec)", "as" : "red_avg_s"},
+                {"expr": "any(any#max#red_max_time_sec)", "as" : "red_max_s"},
+                {"expr": "any(any#max#red_min_time_sec)", "as" : "red_min_s"},
+                {"expr": "any(any#max#ar_avg_time_sec)", "as" : "ar_avg_s"},
+                {"expr": "any(any#max#ar_max_time_sec)", "as" : "ar_max_s"},
+                {"expr": "any(any#max#ar_min_time_sec)", "as" : "ar_min_s"}
                 ],
                 "group by": ["comm_phase"],
             }
@@ -332,6 +358,8 @@ int main(int argc, char **argv)
                 cali_set_int(dest_node_attr, extract_node_number(all_hostnames[partner_rank]));
 #endif
             }
+
+//PINGPONG
 
             double total_time = 0.0;
             int warmup = 1;
@@ -499,6 +527,7 @@ int main(int argc, char **argv)
 //------------------------------------------------------------------------------------------------------------------------------------------------
         MPI_Barrier(MPI_COMM_WORLD);
 //------------------------------------------------------------------------------------------------------------------------------------------------
+//ALLTOALL
         for (int partner_rank : partners)
         {
             std::string region_label = region_names[partner_rank];
@@ -650,6 +679,297 @@ int main(int argc, char **argv)
             free(aa_recv);
 #endif
         }
+
+//------------------------------------------------------------------------------------------------------------------------------------------------
+        MPI_Barrier(MPI_COMM_WORLD);
+//------------------------------------------------------------------------------------------------------------------------------------------------
+//REDUCE
+
+        for (int partner_rank : partners)
+        {
+            std::string region_label = region_names[partner_rank];
+
+            size_t red_count = static_cast<size_t>(message);
+            if (red_count > INT_MAX) {
+                if (rank == 0) fprintf(stderr, "Reduce count too large\n");
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+
+            int warmup = 1;
+            double red_total_time = 0.0;
+
+#if defined(USE_CUDA)
+            char *rd_d_send=nullptr;
+            char *rd_d_recv=nullptr;
+
+            cuda_check(cudaMalloc((void**)&rd_d_send, red_count));
+            cuda_check(cudaMalloc((void**)&rd_d_recv, red_count));
+            cuda_check(cudaMemset(rd_d_send, 'r', red_count));
+            cuda_check(cudaMemset(rd_d_recv, 0,   red_count));
+
+            char *rd_h_send=nullptr;
+            char *rd_h_recv=nullptr;
+            cuda_check(cudaMallocHost((void**)&rd_h_send, red_count));
+            cuda_check(cudaMallocHost((void**)&rd_h_recv, red_count));
+            memset(rd_h_send, 'r', red_count);
+            memset(rd_h_recv, 0,   red_count);
+#elif defined(USE_HIP)
+            char *rd_d_send=nullptr;
+            char *rd_d_recv=nullptr;
+
+            hipError_t a_err1 = hipMalloc((void**)&rd_d_send, red_count);
+            hipError_t a_err2 = hipMalloc((void**)&rd_d_recv, red_count);
+
+            if (a_err1 != hipSuccess || a_err2 != hipSuccess) {
+                fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(a_err1), hipGetErrorString(a_err2));
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+
+            hipError_t a_cuerr1 = hipMemset(rd_d_send, 'a', red_count);
+            assert(a_cuerr1 == hipSuccess);
+            hipError_t a_cuerr2 = hipMemset(rd_d_recv, 0, red_count);
+            assert(a_cuerr2 == hipSuccess);
+
+            char *rd_h_send = (char*)malloc(red_count);
+            char *rd_h_recv = (char*)malloc(red_count);
+            memset(rd_h_send, 'r', red_count);
+            memset(rd_h_recv, 0,   red_count);
+#else
+            char *rd_send = (char*)malloc(red_count);
+            char *rd_recv = (char*)malloc(red_count);
+            memset(rd_send, 'r', red_count);
+            memset(rd_recv, 0,   red_count);
+#endif
+
+#if defined(USE_CALIPER)
+            CALI_MARK_BEGIN(warmup_region_red);
+#endif
+            for (int i = 0; i < warmup; i++)
+            {
+#if defined(USE_CUDA)
+                cuda_check(cudaMemcpy(rd_h_send, rd_d_send, red_count, cudaMemcpyDeviceToHost));
+                MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
+                MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+#else
+                MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+#endif
+            }
+
+#if defined(USE_CALIPER)
+            CALI_MARK_END(warmup_region_red);
+            CALI_MARK_BEGIN(region_label.c_str());
+#endif
+
+            double rtt_min = std::numeric_limits<double>::infinity();
+            double rtt_max = 0.0;
+            int iters = 0;
+
+            for(int i  0; i < PING_PONG_LIMIT; i++)
+            {
+                MPI_Barrier(MPI_COMM_WORLD);
+                double t0 = MPI_Wtime();
+#if defined(USE_CUDA)
+                cuda_check(cudaMemcpy(rd_h_send, rd_d_send, red_count, cudaMemcpyDeviceToHost));
+                MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
+                MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+#else
+                MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+#endif
+                double dt = MPI_Wtime() - t0;
+                double iter_max = 0.0;
+                MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+                if(rank == 0)
+                {
+                    red_total_time += iter_max;
+                    if(dt < min_rtt) min_rtt = dt;
+                    if(dt > max_rtt) max_rtt = dt;
+                    ++iters;
+
+                    double avg_rtt = 0.0;
+                    if(iters > 0){
+                    avg_rtt = alltoall_total_time / iters;
+                    } else {
+                        avg_rtt = 0.0;
+                    }
+#if defined(USE_CALIPER)
+                    cali_set_string(comm_phase_attr, "reduce");
+                    cali_set_double(red_avg_time_sec_attr, avg_rtt);
+                    cali_set_double(red_max_time_sec_attr, max_rtt);
+                    cali_set_double(red_min_time_sec_attr, min_rtt);
+#endif
+                }
+            }
+#if defined(USE_CALIPER)
+            CALI_MARK_END(region_label.c_str());
+#endif
+
+#if defined(USE_HIP)
+            free(rd_h_send);
+            free(rd_h_recv);
+            hipFree(rd_d_send);
+            hipFree(rd_d_recv);
+#elif defined(USE_CUDA)
+            cuda_check(cudaFreeHost(rd_h_send));
+            cuda_check(cudaFreeHost(rd_h_recv));
+            cuda_check(cudaFree(rd_d_send));
+            cuda_check(cudaFree(rd_d_recv));
+#else
+            free(rd_send);
+            free(rd_recv);
+#endif
+        }
+
+//------------------------------------------------------------------------------------------------------------------------------------------------
+        MPI_Barrier(MPI_COMM_WORLD);
+//------------------------------------------------------------------------------------------------------------------------------------------------
+//ALLREDUCE
+
+        for (int partner_rank : partners)
+        {
+            size_t ar_count = static_cast<size_t>(message);
+            if (ar_count > INT_MAX) {
+                if (rank == 0) fprintf(stderr, "Allreduce count too large\n");
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+            int warmup = 1;
+            double ar_total_time = 0.0;
+
+#if defined(USE_CUDA)
+            char *ar_d_send=nullptr;
+            char *ar_d_recv=nullptr;
+            cuda_check(cudaMalloc((void**)&ar_d_send, ar_count));
+            cuda_check(cudaMalloc((void**)&ar_d_recv, ar_count));
+            cuda_check(cudaMemset(ar_d_send, 'a', ar_count));
+            cuda_check(cudaMemset(ar_d_recv, 0,   ar_count));
+
+            char *ar_h_send=nullptr;
+            char *ar_h_recv=nullptr;
+            cuda_check(cudaMallocHost((void**)&ar_h_send, ar_count));
+            cuda_check(cudaMallocHost((void**)&ar_h_recv, ar_count));
+            memset(ar_h_send, 'a', ar_count);
+            memset(ar_h_recv, 0,   ar_count);
+#elif defined(USE_HIP)
+            char *ar_d_send=nullptr;
+            char *ar_d_recv=nullptr;
+
+            hipError_t a_err1 = hipMalloc((void**)&ar_d_send, ar_count);
+            hipError_t a_err2 = hipMalloc((void**)&ar_d_recv, ar_count);
+
+            if (a_err1 != hipSuccess || a_err2 != hipSuccess) {
+                fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(a_err1), hipGetErrorString(a_err2));
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+
+            hipError_t a_cuerr1 = hipMemset(ar_d_send, 'a', ar_count);
+            assert(a_cuerr1 == hipSuccess);
+            hipError_t a_cuerr2 = hipMemset(ar_d_recv, 0, ar_count);
+            assert(a_cuerr2 == hipSuccess);
+
+            char *ar_h_send = (char*)malloc(ar_count);
+            char *ar_h_recv = (char*)malloc(ar_count);
+            memset(ar_h_send, 'a', ar_count);
+            memset(ar_h_recv, 0,   ar_count);
+#else
+            char *ar_send = (char*)malloc(ar_count);
+            char *ar_recv = (char*)malloc(ar_count);
+            memset(ar_send, 'a', ar_count);
+            memset(ar_recv, 0,   ar_count);
+#endif
+
+#if defined(USE_CALIPER)
+            CALI_MARK_BEGIN(warmup_region_ar);
+#endif
+            for (int i = 0; i < warmup; i++)
+            {
+#if defined(USE_CUDA)
+                cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
+                MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
+                MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+#else
+                MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+#endif               
+            }
+#if defined(USE_CALIPER)
+            CALI_MARK_END(warmup_region_ar);
+            CALI_MARK_BEGIN(region_label.c_str());
+#endif
+            double rtt_min = std::numeric_limits<double>::infinity();
+            double rtt_max = 0.0;
+            int iters = 0;
+
+            for(int i  0; i < PING_PONG_LIMIT; i++)
+            {
+                MPI_Barrier(MPI_COMM_WORLD);
+                double t0 = MPI_Wtime();
+#if defined(USE_CUDA)
+                cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
+                MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
+                MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+#else
+                MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+#endif
+                double dt = MPI_Wtime() - t0;
+                double iter_max = 0.0;
+                MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+                if(rank == 0)
+                {
+                    ar_total_time += iter_max;
+                    if(dt < min_rtt) min_rtt = dt;
+                    if(dt > max_rtt) max_rtt = dt;
+                    ++iters;
+
+                    double avg_rtt = 0.0;
+                    if(iters > 0){
+                    avg_rtt = red_total_time / iters;
+                    } else {
+                        avg_rtt = 0.0;
+                    }
+#if defined(USE_CALIPER)
+                    cali_set_string(comm_phase_attr, "allreduce");
+                    cali_set_double(ar_avg_time_sec_attr, avg_rtt);
+                    cali_set_double(ar_max_time_sec_attr, max_rtt);
+                    cali_set_double(ar_min_time_sec_attr, min_rtt);
+#endif
+                }
+            }
+#if defined(USE_CALIPER)
+            CALI_MARK_END(region_label.c_str());
+#endif
+
+#if defined(USE_HIP)
+            free(ar_h_send);
+            free(ar_h_recv);
+            hipFree(ar_d_send);
+            hipFree(ar_d_recv);
+#elif defined(USE_CUDA)
+            cuda_check(cudaFreeHost(ar_h_send));
+            cuda_check(cudaFreeHost(ar_h_recv));
+            cuda_check(cudaFree(ar_d_send));
+            cuda_check(cudaFree(ar_d_recv));
+#else
+            free(ar_send);
+            free(ar_recv);
+#endif
+        }
+
 
 #if defined(USE_CALIPER)
         mgr[message].stop();
