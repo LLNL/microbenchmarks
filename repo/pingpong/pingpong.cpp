@@ -463,7 +463,7 @@ int main(int argc, char **argv)
                 }
             }
 
-            if(rank = 0)
+            if(rank == 0)
             {
                 double avg_rtt = 0.0;
                 if(iters > 0){
