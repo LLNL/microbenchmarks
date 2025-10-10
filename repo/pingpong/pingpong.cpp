@@ -970,23 +970,22 @@ int main(int argc, char **argv)
 #endif
         }
 
-
 #if defined(USE_CALIPER)
         mgr[message].stop();
 #endif
+    }
 
 #if defined(USE_CALIPER)
-        if (rank == 0 && !all_comm_pairs.empty())
-        {
-            adiak::value("all_comm_pairs", all_comm_pairs);
-        }
-        for (auto &m : mgr)
-        {
-            m.second.flush();
-        }
+    if (rank == 0 && !all_comm_pairs.empty())
+    {
+        adiak::value("all_comm_pairs", all_comm_pairs);
+    }
+    for (auto &m : mgr)
+    {
+        m.second.flush();
+    }
 #endif
 
-        MPI_Finalize();
-        return 0;
-    }
+    MPI_Finalize();
+    return 0;
 }
