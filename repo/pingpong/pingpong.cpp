@@ -185,9 +185,17 @@ int main(int argc, char **argv)
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t comm_phase_attr = cali_create_attribute("comm_phase", CALI_TYPE_STRING,
                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t aa_time_sec_attr = cali_create_attribute("aa_time_sec", CALI_TYPE_DOUBLE,
+    cali_id_t aa_avg_time_sec_attr = cali_create_attribute("aa_avg_time_sec", CALI_TYPE_DOUBLE,
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t pp_time_sec_attr = cali_create_attribute("pp_time_sec", CALI_TYPE_DOUBLE,
+    cali_id_t aa_max_time_sec_attr = cali_create_attribute("aa_max_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t aa_min_time_sec_attr = cali_create_attribute("aa_min_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t pp_avg_time_sec_attr = cali_create_attribute("pp_avg_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t pp_max_time_sec_attr = cali_create_attribute("pp_max_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t pp_min_time_sec_attr = cali_create_attribute("pp_min_time_sec", CALI_TYPE_DOUBLE,
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
@@ -207,14 +215,14 @@ int main(int argc, char **argv)
                 {"expr": "any(max#src_node)", "as": "src_node"},
                 {"expr": "any(max#dest_node)", "as": "dest_node"},
                 {"expr": "any(max#message_size_bytes)", "as": "message_size_bytes"},
-                {"expr": "any(max#comm_phase)", "as" : "comm_phase"},
-                {"expr": "avg(aa_time_sec)", "as" : "aa_avg_s"},
-                {"expr": "max(aa_time_sec)", "as" : "aa_max_s"},
-                {"expr": "min(aa_time_sec)", "as" : "aa_min_s"},
-                {"expr": "avg(pp_time_sec)", "as" : "pp_avg_s"},
-                {"expr": "max(pp_time_sec)", "as" : "pp_max_s"},
-                {"expr": "min(pp_time_sec)", "as" : "pp_min_s"}
-                ]
+                {"expr": "any(max#aa_avg_time_sec)", "as" : "aa_avg_s"},
+                {"expr": "any(max#aa_max_time_sec)", "as" : "aa_max_s"},
+                {"expr": "any(max#aa_min_time_sec)", "as" : "aa_min_s"},
+                {"expr": "any(max#pp_avg_time_sec)", "as" : "pp_avg_s"},
+                {"expr": "any(max#pp_max_time_sec)", "as" : "pp_max_s"},
+                {"expr": "any(max#pp_min_time_sec)", "as" : "pp_min_s"}
+                ],
+                "group by": ["comm_phase"],
             },
             {
                 "level": "cross",
@@ -225,14 +233,14 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#src_node)", "as": "src_node"},
                 {"expr": "any(any#max#dest_node)", "as": "dest_node"},
                 {"expr": "any(any#max#message_size_bytes)", "as": "message_size_bytes"},
-                {"expr": "any(any#max#comm_phase)", "as": "comm_phase"},
-                {"expr": "avg(aa_time_sec)", "as" : "aa_avg_s"},
-                {"expr": "max(aa_time_sec)", "as" : "aa_max_s"},
-                {"expr": "min(aa_time_sec)", "as" : "aa_min_s"},
-                {"expr": "avg(pp_time_sec)", "as" : "pp_avg_s"},
-                {"expr": "max(pp_time_sec)", "as" : "pp_max_s"},
-                {"expr": "min(pp_time_sec)", "as" : "pp_min_s"}
-                ]
+                {"expr": "any(any#max#aa_avg_time_sec)", "as" : "aa_avg_s"},
+                {"expr": "any(any#max#aa_max_time_sec)", "as" : "aa_max_s"},
+                {"expr": "any(any#max#aa_min_time_sec)", "as" : "aa_min_s"},
+                {"expr": "any(any#max#pp_avg_time_sec)", "as" : "pp_avg_s"},
+                {"expr": "any(any#max#pp_max_time_sec)", "as" : "pp_max_s"},
+                {"expr": "any(any#max#pp_min_time_sec)", "as" : "pp_min_s"}
+                ],
+                "group by": ["comm_phase"],
             }
             ]
         }
@@ -411,6 +419,9 @@ int main(int argc, char **argv)
             CALI_MARK_END(warmup_region);
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
+            double min_rtt = std::numeric_limits<double>::infinity();
+            double max_rtt = 0.0;
+            int iters = 0;
 
             for (int i = 0; i < PING_PONG_LIMIT; i++)
             {
@@ -432,10 +443,11 @@ int main(int argc, char **argv)
 #endif
                     double rtt = end - start;
                     total_time += rtt;
-#if defined(USE_CALIPER)
-                    cali_set_string(comm_phase_attr, "pingpong");
-                    cali_set_double(pp_time_sec_attr, total_time);
-#endif
+                    
+                    if(rtt < min_rtt) min_rtt = rtt;
+                    if(rtt > max_rtt) max_rtt = rtt;
+                    ++iters;
+
                 }
                 else if (rank == partner_rank)
                 {
@@ -449,6 +461,22 @@ int main(int argc, char **argv)
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #endif
                 }
+            }
+
+            if(rank = 0)
+            {
+                double avg_rtt = 0.0;
+                if(iters > 0){
+                    avg_rtt = total_time / iters;
+                } else {
+                    avg_rtt = 0.0;
+                }
+#if defined(USE_CALIPER)
+                cali_set_string(comm_phase_attr, "pingpong");
+                cali_set_double(pp_avg_time_sec_attr, avg_rtt);
+                cali_set_double(pp_max_time_sec_attr, max_rtt);
+                cali_set_double(pp_min_time_sec_attr, min_rtt);
+#endif
             }
 
 #if defined(USE_CALIPER)
@@ -554,6 +582,10 @@ int main(int argc, char **argv)
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
+            double min_rtt = std::numeric_limits<double>::infinity();
+            double max_rtt = 0.0;
+            int iters = 0;
+
             for (int it = 0; it < PING_PONG_LIMIT; ++it)
             {
                 MPI_Barrier(MPI_COMM_WORLD);
@@ -581,10 +613,22 @@ int main(int argc, char **argv)
                 if (rank == 0)
                 {
                     alltoall_total_time += iter_max;
+                    if(dt < min_rtt) min_rtt = dt;
+                    if(dt > max_rtt) max_rtt = dt;
+                    ++iters;
+
+                    double avg_rtt = 0.0;
+                    if(iters > 0){
+                    avg_rtt = alltoall_total_time / iters;
+                    } else {
+                        avg_rtt = 0.0;
+                    }
 #if defined(USE_CALIPER)
                     cali_set_string(comm_phase_attr, "alltoall");
-                    cali_set_double(aa_time_sec_attr, alltoall_total_time);
-#endif        
+                    cali_set_double(aa_avg_time_sec_attr, avg_rtt);
+                    cali_set_double(aa_max_time_sec_attr, max_rtt);
+                    cali_set_double(aa_min_time_sec_attr, min_rtt);
+#endif
                 }
             }
 #if defined(USE_CALIPER)
