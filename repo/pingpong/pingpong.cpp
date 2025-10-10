@@ -765,8 +765,8 @@ int main(int argc, char **argv)
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-            double rtt_min = std::numeric_limits<double>::infinity();
-            double rtt_max = 0.0;
+            double min_rtt = std::numeric_limits<double>::infinity();
+            double max_rtt = 0.0;
             int iters = 0;
 
             for(int i = 0; i < PING_PONG_LIMIT; i++)
@@ -797,7 +797,7 @@ int main(int argc, char **argv)
 
                     double avg_rtt = 0.0;
                     if(iters > 0){
-                    avg_rtt = alltoall_total_time / iters;
+                    avg_rtt = red_total_time / iters;
                     } else {
                         avg_rtt = 0.0;
                     }
@@ -909,8 +909,8 @@ int main(int argc, char **argv)
             CALI_MARK_END(warmup_region_ar);
             CALI_MARK_BEGIN(region_label.c_str());
 #endif
-            double rtt_min = std::numeric_limits<double>::infinity();
-            double rtt_max = 0.0;
+            double min_rtt = std::numeric_limits<double>::infinity();
+            double max_rtt = 0.0;
             int iters = 0;
 
             for(int i = 0; i < PING_PONG_LIMIT; i++)
@@ -941,7 +941,7 @@ int main(int argc, char **argv)
 
                     double avg_rtt = 0.0;
                     if(iters > 0){
-                    avg_rtt = red_total_time / iters;
+                    avg_rtt = ar_total_time / iters;
                     } else {
                         avg_rtt = 0.0;
                     }
