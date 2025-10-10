@@ -183,10 +183,8 @@ int main(int argc, char **argv)
                                CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t message_size_attr = cali_create_attribute("message_size_bytes",
                                   CALI_TYPE_INT, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t comm_phase_attr = cali_create_attribute("comm_phase", CALI_TYPE_STRING,
-                            CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
-    cali_id_t iter_time_sec_attr = cali_create_attribute("iter_time_sec", CALI_TYPE_DOUBLE
-                               CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t comm_phase_attr = cali_create_attribute("comm_phase", CALI_TYPE_STRING, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t iter_time_sec_attr = cali_create_attribute("iter_time_sec", CALI_TYPE_DOUBLE, CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -458,10 +456,10 @@ int main(int argc, char **argv)
             free(send_buf);
             free(recv_buf);
 #endif
-        }
 
+//------------------------------------------------------------------------------------------------------------------------------------------------
         MPI_Barrier(MPI_COMM_WORLD);
-
+//------------------------------------------------------------------------------------------------------------------------------------------------
         size_t aa_bytes_per_rank = static_cast<size_t>(message);
         size_t aa_total_bytes = aa_bytes_per_rank * static_cast<size_t>(size);
 
@@ -583,6 +581,10 @@ int main(int argc, char **argv)
         free(aa_send);
         free(aa_recv);
 #endif
+
+        }
+
+        
 
 #if defined(USE_CALIPER)
         mgr[message].stop();
