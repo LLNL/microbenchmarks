@@ -317,6 +317,7 @@ int main(int argc, char **argv)
 
             double total_time = 0.0;
             int warmup = 1;
+            double alltoall_total_time = 0.0;
 
 #if defined(USE_HIP)
             char *send_buf;
@@ -556,7 +557,7 @@ int main(int argc, char **argv)
             MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
             if (rank == 0)
             {
-                alltoall_total_max += iter_max;
+                alltoall_total_time += iter_max;
 #if defined(USE_CALIPER)
                 cali_set_string(comm_phase_attr, "alltoall");
                 cali_set_double(iter_time_sec_attr, alltoall_total_time);
