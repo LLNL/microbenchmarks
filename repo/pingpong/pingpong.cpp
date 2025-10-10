@@ -14,6 +14,7 @@
 #include <cmath>
 #include <limits>
 #include <assert.h>
+#include <limits.h>
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -768,7 +769,7 @@ int main(int argc, char **argv)
             double rtt_max = 0.0;
             int iters = 0;
 
-            for(int i  0; i < PING_PONG_LIMIT; i++)
+            for(int i = 0; i < PING_PONG_LIMIT; i++)
             {
                 MPI_Barrier(MPI_COMM_WORLD);
                 double t0 = MPI_Wtime();
@@ -835,6 +836,8 @@ int main(int argc, char **argv)
 
         for (int partner_rank : partners)
         {
+            std::string region_label = region_names[partner_rank];
+            
             size_t ar_count = static_cast<size_t>(message);
             if (ar_count > INT_MAX) {
                 if (rank == 0) fprintf(stderr, "Allreduce count too large\n");
@@ -910,7 +913,7 @@ int main(int argc, char **argv)
             double rtt_max = 0.0;
             int iters = 0;
 
-            for(int i  0; i < PING_PONG_LIMIT; i++)
+            for(int i = 0; i < PING_PONG_LIMIT; i++)
             {
                 MPI_Barrier(MPI_COMM_WORLD);
                 double t0 = MPI_Wtime();
