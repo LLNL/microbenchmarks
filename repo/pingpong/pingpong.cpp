@@ -43,16 +43,15 @@ inline void cuda_check(cudaError_t e) {
 }
 #endif
 
-const char *get_hostname_for_rank(int rank, char all_hostnames[][1024],
-                                  int size) {
+// -------------------- helpers --------------------
+const char *get_hostname_for_rank(int rank, char all_hostnames[][1024], int size) {
     if (rank >= 0 && rank < size) return all_hostnames[rank];
     return "INVALID_RANK";
 }
 
 int extract_node_number(const char *hostname) {
     int len = strlen(hostname);
-    int num = 0;
-    int factor = 1;
+    int num = 0, factor = 1;
     for (int i = len - 1; i >= 0; --i) {
         if (hostname[i] >= '0' && hostname[i] <= '9') {
             num += (hostname[i] - '0') * factor;
@@ -72,6 +71,20 @@ static MPI_Comm make_prefix_subcomm(int active_size) {
     return sub;
 }
 
+enum class P2PMode { PingPong, BW, BiBW };
+
+static P2PMode parse_mode(const char* s) {
+    if (!s) return P2PMode::PingPong;
+    std::string m(s);
+    if (m == "pingpong") return P2PMode::PingPong;
+    if (m == "bw")       return P2PMode::BW;
+    if (m == "bibw")     return P2PMode::BiBW;
+    fprintf(stderr, "Unknown mode '%s' (use pingpong|bw|bibw)\n", s);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return P2PMode::PingPong;
+}
+
+// -------------------- main --------------------
 int main(int argc, char **argv) {
     int rank, size;
     MPI_Init(&argc, &argv);
@@ -81,9 +94,18 @@ int main(int argc, char **argv) {
     char my_hostname[1024];
     gethostname(my_hostname, 1023);
     my_hostname[1023] = '\0';
-    char all_hostnames[size][1024];
-    MPI_Gather(my_hostname, 1024, MPI_CHAR, all_hostnames, 1024, MPI_CHAR, 0,
-               MPI_COMM_WORLD);
+    char all_hostnames_local[1024];
+    strncpy(all_hostnames_local, my_hostname, 1024);
+    std::vector<char> all_hostnames_flat(1024 * size, 0);
+    MPI_Allgather(all_hostnames_local, 1024, MPI_CHAR,
+                  all_hostnames_flat.data(), 1024, MPI_CHAR, MPI_COMM_WORLD);
+    // convenience view
+    auto idx = [&](int r){ return &all_hostnames_flat[r*1024]; };
+    // retain old root-gather map for adiak metadata
+    std::vector<char> all_hostnames_root;
+    if (rank == 0) all_hostnames_root.resize(1024 * size);
+    MPI_Gather(my_hostname, 1024, MPI_CHAR,
+               rank==0? all_hostnames_root.data():nullptr, 1024, MPI_CHAR, 0, MPI_COMM_WORLD);
 
 #if defined(USE_CALIPER)
     std::vector<std::string> all_comm_pairs;
@@ -99,6 +121,11 @@ int main(int argc, char **argv) {
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
     int sys_cores_per_node = 1;
+    int bursts = 1;            // NEW
+    int burst_sleep_ms = 0;    // NEW
+    int window = 64;           // NEW (bw/bibw)
+    P2PMode mode = P2PMode::PingPong; // NEW
+    std::string mode_str = "pingpong";
     std::string metadata;
     const char *warmup_region    = "warmup";
     const char *warmup_region_aa = "warmup_aa";
@@ -108,46 +135,62 @@ int main(int argc, char **argv) {
     int opt;
     const char *usage =
         "Usage: %s [-h] [-i n-iterations] [-p rank1,rank2] [-m msg_sz] "
-        "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] [-b metadata]\n";
+        "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] "
+        "[-b metadata] [-r bursts] [-t sleep_ms] [-M pingpong|bw|bibw] [-w window]\n";
 
-    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:")) != -1) {
+    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:r:t:M:w:")) != -1) {
         switch (opt) {
             case 'h':
                 if (rank==0) printf(usage, argv[0]);
-                MPI_Finalize();
-                return 0;
+                MPI_Finalize(); return 0;
             case 'i': PING_PONG_LIMIT = atoi(optarg); break;
-            case 'p': break;
+            case 'p': /* reserved; no-op to keep CLI parity */ break;
             case 'm': msg_size = atoi(optarg); break;
             case 'n': n_nodes = atoi(optarg); break;
             case 's': sys_cores_per_socket = atoi(optarg); break;
             case 'c': sys_cores_per_node = atoi(optarg); break;
             case 'b': metadata = optarg; break;
+            case 'r': bursts = atoi(optarg); break;
+            case 't': burst_sleep_ms = atoi(optarg); break;
+            case 'M': mode = parse_mode(optarg); mode_str = optarg; break;
+            case 'w': window = atoi(optarg); break;
             default:
                 if (rank==0) printf(usage, argv[0]);
                 MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
+    if (bursts < 1) bursts = 1;
+    if (window < 1) window = 1;
 
     if (rank == 0) {
         printf("Configuration:\n");
-        printf("PING_PONG_LIMIT: %d\n", PING_PONG_LIMIT);
+        printf("PING_PONG_LIMIT (per burst): %d\n", PING_PONG_LIMIT);
         printf("Message size: %d bytes\n", msg_size);
         printf("Cores per socket: %d\n", sys_cores_per_socket);
         printf("Cores per node: %d\n", sys_cores_per_node);
         printf("Nodes: %d\n", n_nodes);
         printf("World size: %d\n", size);
+        printf("Bursts: %d\n", bursts);
+        printf("Sleep between bursts: %d ms\n", burst_sleep_ms);
+        printf("P2P mode: %s\n", mode_str.c_str());
+        if (mode != P2PMode::PingPong) printf("Window: %d\n", window);
 
 #if defined(USE_CALIPER)
-        std::stringstream rankmap;
-        rankmap << "{";
-        for (int i = 0; i < size; ++i) {
-            rankmap << "\"" << i << "\": \"" << all_hostnames[i] << "\"";
-            if (i < size - 1) rankmap << ", ";
+        if (!all_hostnames_root.empty()) {
+            std::stringstream rankmap;
+            rankmap << "{";
+            for (int i = 0; i < size; ++i) {
+                rankmap << "\"" << i << "\": \"" << (&all_hostnames_root[i*1024])[0] << "\"";
+                if (i < size - 1) rankmap << ", ";
+            }
+            rankmap << "}";
+            adiak::value("rank_node_map", rankmap.str());
         }
-        rankmap << "}";
-        adiak::value("rank_node_map", rankmap.str());
         adiak::value("iterations", PING_PONG_LIMIT);
+        adiak::value("bursts", bursts);
+        adiak::value("sleep_ms_between_bursts", burst_sleep_ms);
+        adiak::value("p2p_mode", mode_str);
+        adiak::value("window", window);
 #endif
     }
 
@@ -282,9 +325,8 @@ int main(int argc, char **argv) {
         region_names[1] = "Same Node Same Socket";
     }
 
-    // Build “buckets” (active prefix sizes) for collectives
+    // Build buckets (active prefix sizes) for collectives
     std::vector<int> buckets;
-    // same-node/same-socket (2) if possible
     if (size >= 2) buckets.push_back(2);
     for (int nodes = 2; nodes <= n_nodes; nodes *= 2) {
         int active = nodes * sys_cores_per_node;
@@ -306,29 +348,27 @@ int main(int argc, char **argv) {
         mgr[message].start();
 #endif
 
-        // ------------------------- PINGPONG (WORLD) -------------------------
+        // ------------------------- P2P (WORLD) -------------------------
         for (int partner_rank : partners) {
             std::string region_label = region_names[partner_rank];
-
             if (rank != 0 && rank != partner_rank) continue;
 
             if (rank == 0) {
-                printf("\n--- Testing %s between ranks 0 (%s) and %d (%s), msg=%d ---\n",
+                printf("\n--- Testing %s between ranks 0 (%s) and %d (%s), msg=%d, mode=%s ---\n",
                        region_label.c_str(),
-                       all_hostnames[0], partner_rank, all_hostnames[partner_rank], message);
+                       idx(0), partner_rank, idx(partner_rank), message, mode_str.c_str());
 #if defined(USE_CALIPER)
-                std::string comm_pair = "0(" + std::string(all_hostnames[0]) + ")<->" +
-                                        std::to_string(partner_rank) + "(" + std::string(all_hostnames[partner_rank]) +
+                std::string comm_pair = "0(" + std::string(idx(0)) + ")<->" +
+                                        std::to_string(partner_rank) + "(" + std::string(idx(partner_rank)) +
                                         ")";
                 all_comm_pairs.push_back(comm_pair);
                 cali_set_int(src_rank_attr, 0);
                 cali_set_int(dest_rank_attr, partner_rank);
-                cali_set_int(src_node_attr, extract_node_number(all_hostnames[0]));
-                cali_set_int(dest_node_attr, extract_node_number(all_hostnames[partner_rank]));
+                cali_set_int(src_node_attr, extract_node_number(idx(0)));
+                cali_set_int(dest_node_attr, extract_node_number(idx(partner_rank)));
 #endif
             }
 
-            double total_time = 0.0;
             int warmup = 1;
 
 #if defined(USE_HIP)
@@ -361,84 +401,230 @@ int main(int argc, char **argv) {
             memset(recv_buf, 0, message);
 #endif
 
+            // Warmup
             CALI_MARK_BEGIN(warmup_region);
             for (int i = 0; i < warmup; i++) {
-                if (rank == 0) {
+                if (mode == P2PMode::PingPong) {
+                    if (rank == 0) {
 #if defined(USE_HIP)
-                    MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #elif defined(USE_CUDA)
-                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                    MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                        MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                        MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
 #else
-                    MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #endif
-                } else if (rank == partner_rank) {
+                    } else if (rank == partner_rank) {
 #if defined(USE_HIP)
-                    MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #elif defined(USE_CUDA)
-                    MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                    MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                        MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                        MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #else
-                    MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #endif
+                    }
+                } else if (mode == P2PMode::BW) {
+                    // Unidirectional warmup: rank0 sends window msgs, partner receives
+                    if (rank == 0) {
+#if defined(USE_CUDA)
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+#endif
+                        for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                            MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+#else
+                            MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+#endif
+                        }
+                    } else if (rank == partner_rank) {
+                        for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                            MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+#else
+                            MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif
+                        }
+                    }
+                } else { // BiBW warmup
+                    for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                        MPI_Sendrecv(h_send, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     h_recv, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                        MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#else
+                        MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif
+                    }
                 }
             }
             CALI_MARK_END(warmup_region);
+            MPI_Barrier(MPI_COMM_WORLD);
 
-            CALI_MARK_BEGIN(region_label.c_str());
-            double min_rtt = std::numeric_limits<double>::infinity();
-            double max_rtt = 0.0;
+            // Measurements
+            double total_time = 0.0;
+            double min_t = std::numeric_limits<double>::infinity();
+            double max_t = 0.0;
             int iters = 0;
 
-            for (int i = 0; i < PING_PONG_LIMIT; i++) {
-                if (rank == 0) {
+            CALI_MARK_BEGIN(region_label.c_str());
+
+            for (int b = 0; b < bursts; ++b) {
+                for (int i = 0; i < PING_PONG_LIMIT; i++) {
+                    if (mode == P2PMode::PingPong) {
+                        if (rank == 0) {
 #if defined(USE_CUDA)
-                    double start = MPI_Wtime();
-                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                    MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-                    double end = MPI_Wtime();
+                            double start = MPI_Wtime();
+                            cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                            MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                            MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                            double end = MPI_Wtime();
 #else
-                    double start = MPI_Wtime();
-                    MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                    MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    double end = MPI_Wtime();
+                            double start = MPI_Wtime();
+                            MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+                            MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            double end = MPI_Wtime();
 #endif
-                    double rtt = end - start;
-                    total_time += rtt;
-                    if (rtt < min_rtt) min_rtt = rtt;
-                    if (rtt > max_rtt) max_rtt = rtt;
-                    ++iters;
-                } else if (rank == partner_rank) {
+                            double dt = end - start;
+                            total_time += dt;
+                            if (dt < min_t) min_t = dt;
+                            if (dt > max_t) max_t = dt;
+                            ++iters;
+                        } else if (rank == partner_rank) {
 #if defined(USE_CUDA)
-                    MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-                    cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                    MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                            MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                            cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                            MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #else
-                    MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                            MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #endif
-                }
-            }
+                        }
+                    } else if (mode == P2PMode::BW) {
+                        // Rank 0 measures total window send time; receiver just drains.
+                        if (rank == 0) {
+#if defined(USE_CUDA)
+                            cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+#endif
+                            MPI_Barrier(MPI_COMM_WORLD);
+                            double t0 = MPI_Wtime();
+                            for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                                MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+#else
+                                MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
+#endif
+                            }
+                            double dt = MPI_Wtime() - t0;
+                            total_time += dt;
+                            if (dt < min_t) min_t = dt;
+                            if (dt > max_t) max_t = dt;
+                            ++iters;
+                            MPI_Barrier(MPI_COMM_WORLD);
+                        } else if (rank == partner_rank) {
+                            MPI_Barrier(MPI_COMM_WORLD);
+                            for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                                MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                                cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+#else
+                                MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif
+                            }
+                            MPI_Barrier(MPI_COMM_WORLD);
+                        }
+                    } else { // BiBW
+                        // Both measure locally; use max across the two for consistency.
+                        MPI_Barrier(MPI_COMM_WORLD);
+                        double t0 = MPI_Wtime();
+                        for (int w = 0; w < window; ++w) {
+#if defined(USE_CUDA)
+                            cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                            MPI_Sendrecv(h_send, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         h_recv, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                            cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+#elif defined(USE_HIP)
+                            MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#else
+                            MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
+                                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+#endif
+                        }
+                        double dt = MPI_Wtime() - t0;
+                        double max_dt = 0.0;
+                        MPI_Allreduce(&dt, &max_dt, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+                        if (rank == 0) {
+                            total_time += max_dt;
+                            if (max_dt < min_t) min_t = max_dt;
+                            if (max_dt > max_t) max_t = max_dt;
+                            ++iters;
+                        }
+                        MPI_Barrier(MPI_COMM_WORLD);
+                    }
+                } // iterations
+
+                if (burst_sleep_ms > 0) usleep((useconds_t)burst_sleep_ms * 1000);
+            } // bursts
 
             if (rank == 0) {
-                double avg_rtt = (iters > 0) ? total_time / iters : 0.0;
+                if (mode == P2PMode::PingPong) {
+                    double avg_rtt = (iters > 0) ? total_time / iters : 0.0;
 #if defined(USE_CALIPER)
-                cali_set_string(comm_phase_attr, "pingpong");
-                cali_set_double(pp_avg_time_sec_attr, avg_rtt);
-                cali_set_double(pp_max_time_sec_attr, max_rtt);
-                cali_set_double(pp_min_time_sec_attr, min_rtt);
+                    cali_set_string(comm_phase_attr, "pingpong");
+                    cali_set_double(pp_avg_time_sec_attr, avg_rtt);
+                    cali_set_double(pp_max_time_sec_attr, max_t);
+                    cali_set_double(pp_min_time_sec_attr, min_t);
 #endif
+                    double avg_latency_us = (avg_rtt * 1e6) / 2.0;
+                    double min_latency_us = (min_t * 1e6) / 2.0;
+                    double max_latency_us = (max_t * 1e6) / 2.0;
+                    printf("[PINGPONG] RTT avg=%.6f s min=%.6f s max=%.6f s | latency(one-way) avg=%.1f us min=%.1f us max=%.1f us\n",
+                           avg_rtt, min_t, max_t, avg_latency_us, min_latency_us, max_latency_us);
+                } else if (mode == P2PMode::BW) {
+                    // total bytes per iteration (sender): window * message
+                    double bytes_per_iter = (double)window * (double)message;
+                    double avg_t = (iters > 0) ? total_time / iters : 0.0;
+                    double avg_MBps = (avg_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / avg_t : 0.0;
+                    double avg_Gbps = (avg_t > 0) ? (bytes_per_iter * 8.0 / 1e9) / avg_t : 0.0;
+                    double min_MBps = (max_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / max_t : 0.0; // max time => min bw
+                    double max_MBps = (min_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / min_t : 0.0; // min time => max bw
+                    printf("[BW] window=%d  per-iter-bytes=%.0f  time avg=%.6f s (min=%.6f, max=%.6f)\n",
+                           window, bytes_per_iter, avg_t, min_t, max_t);
+                    printf("     bandwidth avg=%.2f MB/s (%.2f Gb/s) | min=%.2f MB/s | max=%.2f MB/s\n",
+                           avg_MBps, avg_Gbps, min_MBps, max_MBps);
+                } else { // BiBW
+                    double bytes_per_iter = (double)window * (double)message; // per direction
+                    double avg_t = (iters > 0) ? total_time / iters : 0.0;
+                    double avg_MBps_each = (avg_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / avg_t : 0.0;
+                    double avg_Gbps_each = (avg_t > 0) ? (bytes_per_iter * 8.0 / 1e9) / avg_t : 0.0;
+                    printf("[BIBW] window=%d per-iter-bytes(each dir)=%.0f time avg=%.6f s (min=%.6f, max=%.6f)\n",
+                           window, bytes_per_iter, avg_t, min_t, max_t);
+                    printf("       bandwidth each-dir avg=%.2f MB/s (%.2f Gb/s); aggregate≈%.2f MB/s\n",
+                           avg_MBps_each, avg_Gbps_each, 2.0*avg_MBps_each);
+                }
             }
             CALI_MARK_END(region_label.c_str());
 
@@ -521,32 +707,36 @@ int main(int argc, char **argv) {
                 CALI_MARK_END(warmup_region_aa);
 
                 CALI_MARK_BEGIN(region_label.c_str());
-                for (int it = 0; it < PING_PONG_LIMIT; ++it) {
-                    MPI_Barrier(sub);
-                    double t0 = MPI_Wtime();
+                for (int b = 0; b < bursts; ++b) {
+                    for (int it = 0; it < PING_PONG_LIMIT; ++it) {
+                        MPI_Barrier(sub);
+                        double t0 = MPI_Wtime();
 #if defined(USE_HIP)
-                    hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
-                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR,
-                                 aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, sub);
-                    hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
+                        hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
+                        MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR,
+                                     aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, sub);
+                        hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
 #elif defined(USE_CUDA)
-                    cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
-                    MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR,
-                                 ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, sub);
-                    cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
+                        cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
+                        MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR,
+                                     ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, sub);
+                        cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
 #else
-                    MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR,
-                                 aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, sub);
+                        MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR,
+                                     aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, sub);
 #endif
-                    double dt = MPI_Wtime() - t0;
-                    double iter_max = 0.0;
-                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, sub);
-                    if (sub_rank == 0) {
-                        alltoall_total_time += iter_max;
-                        if (dt < min_rtt) min_rtt = dt;
-                        if (dt > max_rtt) max_rtt = dt;
-                        ++iters;
+                        double dt = MPI_Wtime() - t0;
+                        double iter_max = 0.0;
+                        MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, sub);
+                        if (sub_rank == 0) {
+                            alltoall_total_time += iter_max;
+                            if (dt < min_rtt) min_rtt = dt;
+                            if (dt > max_rtt) max_rtt = dt;
+                            ++iters;
+                        }
                     }
+                    MPI_Barrier(sub);
+                    if (burst_sleep_ms > 0) usleep((useconds_t)burst_sleep_ms * 1000);
                 }
                 CALI_MARK_END(region_label.c_str());
 
@@ -558,6 +748,8 @@ int main(int argc, char **argv) {
                     cali_set_double(aa_max_time_sec_attr, max_rtt);
                     cali_set_double(aa_min_time_sec_attr, min_rtt);
 #endif
+                    printf("[ALLTOALL %d] avg=%.6f s min=%.6f s max=%.6f s\n",
+                           active_size, avg_rtt, min_rtt, max_rtt);
                 }
 
 #if defined(USE_HIP)
@@ -571,7 +763,6 @@ int main(int argc, char **argv) {
 #endif
             }
             if (sub != MPI_COMM_NULL) MPI_Comm_free(&sub);
-
             MPI_Barrier(MPI_COMM_WORLD);
         }
 
@@ -639,29 +830,33 @@ int main(int argc, char **argv) {
                 CALI_MARK_END(warmup_region_red);
 
                 CALI_MARK_BEGIN(region_label.c_str());
-                for (int i = 0; i < PING_PONG_LIMIT; i++) {
-                    MPI_Barrier(sub);
-                    double t0 = MPI_Wtime();
+                for (int b = 0; b < bursts; ++b) {
+                    for (int i = 0; i < PING_PONG_LIMIT; i++) {
+                        MPI_Barrier(sub);
+                        double t0 = MPI_Wtime();
 #if defined(USE_CUDA)
-                    cuda_check(cudaMemcpy(rd_h_send, rd_d_send, red_count, cudaMemcpyDeviceToHost));
-                    MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
-                    cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
+                        cuda_check(cudaMemcpy(rd_h_send, rd_d_send, red_count, cudaMemcpyDeviceToHost));
+                        MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
+                        cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
-                    MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
-                    hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+                        hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
+                        MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
+                        hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
 #else
-                    MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
+                        MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, sub);
 #endif
-                    double dt = MPI_Wtime() - t0;
-                    double iter_max = 0.0;
-                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, sub);
-                    if (sub_rank == 0) {
-                        red_total_time += iter_max;
-                        if (dt < min_rtt) min_rtt = dt;
-                        if (dt > max_rtt) max_rtt = dt;
-                        ++iters;
+                        double dt = MPI_Wtime() - t0;
+                        double iter_max = 0.0;
+                        MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, sub);
+                        if (sub_rank == 0) {
+                            red_total_time += iter_max;
+                            if (dt < min_rtt) min_rtt = dt;
+                            if (dt > max_rtt) max_rtt = dt;
+                            ++iters;
+                        }
                     }
+                    MPI_Barrier(sub);
+                    if (burst_sleep_ms > 0) usleep((useconds_t)burst_sleep_ms * 1000);
                 }
                 CALI_MARK_END(region_label.c_str());
 
@@ -673,6 +868,8 @@ int main(int argc, char **argv) {
                     cali_set_double(red_max_time_sec_attr, max_rtt);
                     cali_set_double(red_min_time_sec_attr, min_rtt);
 #endif
+                    printf("[REDUCE %d] avg=%.6f s min=%.6f s max=%.6f s\n",
+                           active_size, avg_rtt, min_rtt, max_rtt);
                 }
 
 #if defined(USE_HIP)
@@ -756,29 +953,33 @@ int main(int argc, char **argv) {
                 CALI_MARK_END(warmup_region_ar);
 
                 CALI_MARK_BEGIN(region_label.c_str());
-                for (int i = 0; i < PING_PONG_LIMIT; i++) {
-                    MPI_Barrier(sub);
-                    double t0 = MPI_Wtime();
+                for (int b = 0; b < bursts; ++b) {
+                    for (int i = 0; i < PING_PONG_LIMIT; i++) {
+                        MPI_Barrier(sub);
+                        double t0 = MPI_Wtime();
 #if defined(USE_CUDA)
-                    cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
-                    cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
+                        cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
+                        MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
+                        cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
-                    hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+                        hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
+                        MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
+                        hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
 #else
-                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
+                        MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, sub);
 #endif
-                    double dt = MPI_Wtime() - t0;
-                    double iter_max = 0.0;
-                    MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, sub);
-                    if (sub_rank == 0) {
-                        ar_total_time += iter_max;
-                        if (dt < min_rtt) min_rtt = dt;
-                        if (dt > max_rtt) max_rtt = dt;
-                        ++iters;
+                        double dt = MPI_Wtime() - t0;
+                        double iter_max = 0.0;
+                        MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, sub);
+                        if (sub_rank == 0) {
+                            ar_total_time += iter_max;
+                            if (dt < min_rtt) min_rtt = dt;
+                            if (dt > max_rtt) max_rtt = dt;
+                            ++iters;
+                        }
                     }
+                    MPI_Barrier(sub);
+                    if (burst_sleep_ms > 0) usleep((useconds_t)burst_sleep_ms * 1000);
                 }
                 CALI_MARK_END(region_label.c_str());
 
@@ -790,6 +991,8 @@ int main(int argc, char **argv) {
                     cali_set_double(ar_max_time_sec_attr, max_rtt);
                     cali_set_double(ar_min_time_sec_attr, min_rtt);
 #endif
+                    printf("[ALLREDUCE %d] avg=%.6f s min=%.6f s max=%.6f s\n",
+                           active_size, avg_rtt, min_rtt, max_rtt);
                 }
 
 #if defined(USE_HIP)
