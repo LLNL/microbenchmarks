@@ -71,6 +71,15 @@ static MPI_Comm make_prefix_subcomm(int active_size) {
     return sub;
 }
 
+// Make a communicator for the pair {0, partner_rank}
+static MPI_Comm make_pair_comm(int partner_rank) {
+    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int color = (rank == 0 || rank == partner_rank) ? (1000 + partner_rank) : MPI_UNDEFINED;
+    MPI_Comm sub = MPI_COMM_NULL;
+    MPI_Comm_split(MPI_COMM_WORLD, color, rank, &sub);
+    return sub;
+}
+
 enum class P2PMode { PingPong, BW, BiBW };
 enum class OpKind  { PingPong, Alltoall, Reduce, Allreduce };
 
@@ -372,6 +381,11 @@ int main(int argc, char **argv) {
             std::string region_label = region_names[partner_rank];
             if (rank != 0 && rank != partner_rank) continue;
 
+            // pair communicator for ranks {0, partner_rank}
+            MPI_Comm pair = make_pair_comm(partner_rank);
+            int pair_rank=-1, pair_size=0;
+            if (pair != MPI_COMM_NULL) { MPI_Comm_rank(pair,&pair_rank); MPI_Comm_size(pair,&pair_size); }
+
             if (rank == 0) {
                 printf("\n--- Testing %s between ranks 0 (%s) and %d (%s), msg=%d, mode=%s ---\n",
                        region_label.c_str(),
@@ -482,10 +496,6 @@ int main(int argc, char **argv) {
                                      h_recv, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
                                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                         cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-#elif defined(USE_HIP)
-                        MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
-                                     recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
-                                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #else
                         MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
                                      recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
@@ -495,7 +505,8 @@ int main(int argc, char **argv) {
                 }
             }
             CALI_MARK_END(warmup_region);
-            MPI_Barrier(MPI_COMM_WORLD);
+
+            if (pair != MPI_COMM_NULL) MPI_Barrier(pair); // pair barrier (not WORLD)
 
             // Measurements
             double total_time = 0.0;
@@ -543,7 +554,7 @@ int main(int argc, char **argv) {
 #if defined(USE_CUDA)
                             cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
 #endif
-                            MPI_Barrier(MPI_COMM_WORLD);
+                            if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                             double t0 = MPI_Wtime();
                             for (int w = 0; w < window; ++w) {
 #if defined(USE_CUDA)
@@ -557,9 +568,9 @@ int main(int argc, char **argv) {
                             if (dt < min_t) min_t = dt;
                             if (dt > max_t) max_t = dt;
                             ++iters;
-                            MPI_Barrier(MPI_COMM_WORLD);
+                            if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                         } else if (rank == partner_rank) {
-                            MPI_Barrier(MPI_COMM_WORLD);
+                            if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                             for (int w = 0; w < window; ++w) {
 #if defined(USE_CUDA)
                                 MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -568,10 +579,10 @@ int main(int argc, char **argv) {
                                 MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #endif
                             }
-                            MPI_Barrier(MPI_COMM_WORLD);
+                            if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                         }
                     } else { // BiBW
-                        MPI_Barrier(MPI_COMM_WORLD);
+                        if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                         double t0 = MPI_Wtime();
                         for (int w = 0; w < window; ++w) {
 #if defined(USE_CUDA)
@@ -580,10 +591,6 @@ int main(int argc, char **argv) {
                                          h_recv, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
                                          MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                             cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-#elif defined(USE_HIP)
-                            MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
-                                         recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
-                                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 #else
                             MPI_Sendrecv(send_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
                                          recv_buf, message, MPI_CHAR, (rank==0?partner_rank:0), 0,
@@ -592,14 +599,15 @@ int main(int argc, char **argv) {
                         }
                         double dt = MPI_Wtime() - t0;
                         double max_dt = 0.0;
-                        MPI_Allreduce(&dt, &max_dt, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+                        if (pair != MPI_COMM_NULL)
+                            MPI_Allreduce(&dt, &max_dt, 1, MPI_DOUBLE, MPI_MAX, pair);
                         if (rank == 0) {
                             total_time += max_dt;
                             if (max_dt < min_t) min_t = max_dt;
                             if (max_dt > max_t) max_t = max_dt;
                             ++iters;
                         }
-                        MPI_Barrier(MPI_COMM_WORLD);
+                        if (pair != MPI_COMM_NULL) MPI_Barrier(pair);
                     }
                 } // iterations
 
@@ -652,6 +660,8 @@ int main(int argc, char **argv) {
 #else
             free(send_buf); free(recv_buf);
 #endif
+
+            if (pair != MPI_COMM_NULL) MPI_Comm_free(&pair);
         } // end P2P
 
         // keep everyone aligned before starting collectives
