@@ -72,6 +72,7 @@ static MPI_Comm make_prefix_subcomm(int active_size) {
 }
 
 enum class P2PMode { PingPong, BW, BiBW };
+enum class OpKind  { PingPong, Alltoall, Reduce, Allreduce };
 
 static P2PMode parse_mode(const char* s) {
     if (!s) return P2PMode::PingPong;
@@ -82,6 +83,18 @@ static P2PMode parse_mode(const char* s) {
     fprintf(stderr, "Unknown mode '%s' (use pingpong|bw|bibw)\n", s);
     MPI_Abort(MPI_COMM_WORLD, 1);
     return P2PMode::PingPong;
+}
+
+static OpKind parse_opkind(const char* s) {
+    if (!s) return OpKind::PingPong;
+    std::string m(s);
+    if (m == "pingpong")  return OpKind::PingPong;
+    if (m == "alltoall")  return OpKind::Alltoall;
+    if (m == "reduce")    return OpKind::Reduce;
+    if (m == "allreduce") return OpKind::Allreduce;
+    fprintf(stderr, "Unknown op '%s' (use pingpong|alltoall|reduce|allreduce)\n", s);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return OpKind::PingPong;
 }
 
 // -------------------- main --------------------
@@ -99,9 +112,8 @@ int main(int argc, char **argv) {
     std::vector<char> all_hostnames_flat(1024 * size, 0);
     MPI_Allgather(all_hostnames_local, 1024, MPI_CHAR,
                   all_hostnames_flat.data(), 1024, MPI_CHAR, MPI_COMM_WORLD);
-    // convenience view
     auto idx = [&](int r){ return &all_hostnames_flat[r*1024]; };
-    // retain old root-gather map for adiak metadata
+    // also gather to root for adiak metadata text map
     std::vector<char> all_hostnames_root;
     if (rank == 0) all_hostnames_root.resize(1024 * size);
     MPI_Gather(my_hostname, 1024, MPI_CHAR,
@@ -121,11 +133,13 @@ int main(int argc, char **argv) {
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
     int sys_cores_per_node = 1;
-    int bursts = 1;            // NEW
-    int burst_sleep_ms = 0;    // NEW
-    int window = 64;           // NEW (bw/bibw)
-    P2PMode mode = P2PMode::PingPong; // NEW
+    int bursts = 1;
+    int burst_sleep_ms = 0;
+    int window = 64;                // for bw/bibw
+    P2PMode mode = P2PMode::PingPong;
     std::string mode_str = "pingpong";
+    OpKind op = OpKind::PingPong;   // which operation to run
+    std::string op_str = "pingpong";
     std::string metadata;
     const char *warmup_region    = "warmup";
     const char *warmup_region_aa = "warmup_aa";
@@ -136,15 +150,17 @@ int main(int argc, char **argv) {
     const char *usage =
         "Usage: %s [-h] [-i n-iterations] [-p rank1,rank2] [-m msg_sz] "
         "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] "
-        "[-b metadata] [-r bursts] [-t sleep_ms] [-M pingpong|bw|bibw] [-w window]\n";
+        "[-b metadata] [-r bursts] [-t sleep_ms] "
+        "[-O pingpong|alltoall|reduce|allreduce] "
+        "[-M pingpong|bw|bibw] [-w window]\n";
 
-    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:r:t:M:w:")) != -1) {
+    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:r:t:O:M:w:")) != -1) {
         switch (opt) {
             case 'h':
                 if (rank==0) printf(usage, argv[0]);
                 MPI_Finalize(); return 0;
             case 'i': PING_PONG_LIMIT = atoi(optarg); break;
-            case 'p': /* reserved; no-op to keep CLI parity */ break;
+            case 'p': /* keep CLI parity; unused here */ break;
             case 'm': msg_size = atoi(optarg); break;
             case 'n': n_nodes = atoi(optarg); break;
             case 's': sys_cores_per_socket = atoi(optarg); break;
@@ -152,6 +168,7 @@ int main(int argc, char **argv) {
             case 'b': metadata = optarg; break;
             case 'r': bursts = atoi(optarg); break;
             case 't': burst_sleep_ms = atoi(optarg); break;
+            case 'O': op = parse_opkind(optarg); op_str = optarg; break;
             case 'M': mode = parse_mode(optarg); mode_str = optarg; break;
             case 'w': window = atoi(optarg); break;
             default:
@@ -164,6 +181,8 @@ int main(int argc, char **argv) {
 
     if (rank == 0) {
         printf("Configuration:\n");
+        printf("Operation: %s\n", op_str.c_str());
+        printf("P2P mode (when -O pingpong): %s\n", mode_str.c_str());
         printf("PING_PONG_LIMIT (per burst): %d\n", PING_PONG_LIMIT);
         printf("Message size: %d bytes\n", msg_size);
         printf("Cores per socket: %d\n", sys_cores_per_socket);
@@ -172,7 +191,6 @@ int main(int argc, char **argv) {
         printf("World size: %d\n", size);
         printf("Bursts: %d\n", bursts);
         printf("Sleep between bursts: %d ms\n", burst_sleep_ms);
-        printf("P2P mode: %s\n", mode_str.c_str());
         if (mode != P2PMode::PingPong) printf("Window: %d\n", window);
 
 #if defined(USE_CALIPER)
@@ -186,10 +204,11 @@ int main(int argc, char **argv) {
             rankmap << "}";
             adiak::value("rank_node_map", rankmap.str());
         }
+        adiak::value("operation", op_str);
+        adiak::value("p2p_mode", mode_str);
         adiak::value("iterations", PING_PONG_LIMIT);
         adiak::value("bursts", bursts);
         adiak::value("sleep_ms_between_bursts", burst_sleep_ms);
-        adiak::value("p2p_mode", mode_str);
         adiak::value("window", window);
 #endif
     }
@@ -349,7 +368,7 @@ int main(int argc, char **argv) {
 #endif
 
         // ------------------------- P2P (WORLD) -------------------------
-        for (int partner_rank : partners) {
+        if (op == OpKind::PingPong) for (int partner_rank : partners) {
             std::string region_label = region_names[partner_rank];
             if (rank != 0 && rank != partner_rank) continue;
 
@@ -433,7 +452,7 @@ int main(int argc, char **argv) {
 #endif
                     }
                 } else if (mode == P2PMode::BW) {
-                    // Unidirectional warmup: rank0 sends window msgs, partner receives
+                    // Unidirectional warmup
                     if (rank == 0) {
 #if defined(USE_CUDA)
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
@@ -520,7 +539,6 @@ int main(int argc, char **argv) {
 #endif
                         }
                     } else if (mode == P2PMode::BW) {
-                        // Rank 0 measures total window send time; receiver just drains.
                         if (rank == 0) {
 #if defined(USE_CUDA)
                             cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
@@ -553,7 +571,6 @@ int main(int argc, char **argv) {
                             MPI_Barrier(MPI_COMM_WORLD);
                         }
                     } else { // BiBW
-                        // Both measure locally; use max across the two for consistency.
                         MPI_Barrier(MPI_COMM_WORLD);
                         double t0 = MPI_Wtime();
                         for (int w = 0; w < window; ++w) {
@@ -604,19 +621,18 @@ int main(int argc, char **argv) {
                     printf("[PINGPONG] RTT avg=%.6f s min=%.6f s max=%.6f s | latency(one-way) avg=%.1f us min=%.1f us max=%.1f us\n",
                            avg_rtt, min_t, max_t, avg_latency_us, min_latency_us, max_latency_us);
                 } else if (mode == P2PMode::BW) {
-                    // total bytes per iteration (sender): window * message
                     double bytes_per_iter = (double)window * (double)message;
                     double avg_t = (iters > 0) ? total_time / iters : 0.0;
                     double avg_MBps = (avg_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / avg_t : 0.0;
                     double avg_Gbps = (avg_t > 0) ? (bytes_per_iter * 8.0 / 1e9) / avg_t : 0.0;
-                    double min_MBps = (max_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / max_t : 0.0; // max time => min bw
-                    double max_MBps = (min_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / min_t : 0.0; // min time => max bw
+                    double min_MBps = (max_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / max_t : 0.0;
+                    double max_MBps = (min_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / min_t : 0.0;
                     printf("[BW] window=%d  per-iter-bytes=%.0f  time avg=%.6f s (min=%.6f, max=%.6f)\n",
                            window, bytes_per_iter, avg_t, min_t, max_t);
                     printf("     bandwidth avg=%.2f MB/s (%.2f Gb/s) | min=%.2f MB/s | max=%.2f MB/s\n",
                            avg_MBps, avg_Gbps, min_MBps, max_MBps);
                 } else { // BiBW
-                    double bytes_per_iter = (double)window * (double)message; // per direction
+                    double bytes_per_iter = (double)window * (double)message;
                     double avg_t = (iters > 0) ? total_time / iters : 0.0;
                     double avg_MBps_each = (avg_t > 0) ? (bytes_per_iter / (1024.0*1024.0)) / avg_t : 0.0;
                     double avg_Gbps_each = (avg_t > 0) ? (bytes_per_iter * 8.0 / 1e9) / avg_t : 0.0;
@@ -636,13 +652,13 @@ int main(int argc, char **argv) {
 #else
             free(send_buf); free(recv_buf);
 #endif
-        }
+        } // end P2P
 
         // keep everyone aligned before starting collectives
         MPI_Barrier(MPI_COMM_WORLD);
 
         // ------------------------- ALLTOALL (SUBCOMMS) -------------------------
-        for (int active_size : buckets) {
+        if (op == OpKind::Alltoall) for (int active_size : buckets) {
             std::string region_label = "Alltoall_" + std::to_string(active_size);
             MPI_Comm sub = make_prefix_subcomm(active_size);
             int sub_rank=-1, sub_size=0;
@@ -767,7 +783,7 @@ int main(int argc, char **argv) {
         }
 
         // ------------------------- REDUCE (SUBCOMMS) -------------------------
-        for (int active_size : buckets) {
+        if (op == OpKind::Reduce) for (int active_size : buckets) {
             std::string region_label = "Reduce_" + std::to_string(active_size);
             MPI_Comm sub = make_prefix_subcomm(active_size);
             int sub_rank=-1, sub_size=0;
@@ -890,7 +906,7 @@ int main(int argc, char **argv) {
         }
 
         // ------------------------- ALLREDUCE (SUBCOMMS) -------------------------
-        for (int active_size : buckets) {
+        if (op == OpKind::Allreduce) for (int active_size : buckets) {
             std::string region_label = "Allreduce_" + std::to_string(active_size);
             MPI_Comm sub = make_prefix_subcomm(active_size);
             int sub_rank=-1, sub_size=0;
