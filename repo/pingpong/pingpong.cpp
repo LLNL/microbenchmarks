@@ -27,7 +27,7 @@
 #define CALI_MARK_END
 #endif
 
-#if defined(USE_ROCM)
+#if defined(USE_HIP)
 #include <hip/hip_runtime.h>
 #include <hip/hip_runtime_api.h>
 #endif
@@ -307,7 +307,7 @@ int main(int argc, char **argv)
             double total_time = 0.0;
             int warmup = 1;
 
-#if defined(USE_ROCM)
+#if defined(USE_HIP)
             char *send_buf;
             char *recv_buf;
 
@@ -355,7 +355,7 @@ int main(int argc, char **argv)
             {
                 if (rank == 0)
                 {
-#if defined(USE_ROCM)
+#if defined(USE_HIP)
                     MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
                     MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
                              MPI_STATUS_IGNORE);
@@ -371,7 +371,7 @@ int main(int argc, char **argv)
                 }
                 else if (rank == partner_rank)
                 {
-#if defined(USE_ROCM)
+#if defined(USE_HIP)
                     MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                     MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #elif defined(USE_CUDA)
@@ -430,7 +430,7 @@ int main(int argc, char **argv)
             CALI_MARK_END(region_label.c_str());
 #endif
 
-#if defined(USE_ROCM)
+#if defined(USE_HIP)
             hipFree(send_buf);
             hipFree(recv_buf);
 #elif defined(USE_CUDA)
