@@ -15,6 +15,7 @@
 #include <limits>
 #include <assert.h>
 #include <limits.h>
+#include <random>   // <--- added
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -73,6 +74,25 @@ int extract_node_number(const char *hostname)
         }
     }
     return num;
+}
+
+// Fill buf[0..len-1] with a repeating random pattern of length 16.
+void fill_with_random_pattern(char* buf, size_t len)
+{
+    if (!buf || len == 0)
+        return;
+
+    static thread_local std::mt19937 gen(std::random_device{}());
+    std::uniform_int_distribution<int> dist(0, 25); // 'a'..'z'
+
+    char pattern[16];
+    for (int i = 0; i < 16; ++i) {
+        pattern[i] = static_cast<char>('a' + dist(gen));
+    }
+
+    for (size_t i = 0; i < len; ++i) {
+        buf[i] = pattern[i % 16];
+    }
 }
 
 int main(int argc, char **argv)
@@ -397,10 +417,17 @@ int main(int argc, char **argv)
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                hipError_t cuerr1 = hipMemset(send_buf, 'a', message);
-                assert(cuerr1 == hipSuccess);
+                // host pattern for HIP send buffer
+                {
+                    char* h_rand = (char*)malloc(message);
+                    fill_with_random_pattern(h_rand, (size_t)message);
+                    hipError_t cuerr1 = hipMemcpy(send_buf, h_rand, message, hipMemcpyHostToDevice);
+                    assert(cuerr1 == hipSuccess);
+                    free(h_rand);
+                }
                 hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
                 assert(cuerr2 == hipSuccess);
+
 #elif defined(USE_CUDA)
                 int dev_count = 0;
                 cuda_check(cudaGetDeviceCount(&dev_count));
@@ -410,18 +437,21 @@ int main(int argc, char **argv)
                 char *d_recv = nullptr;
                 cuda_check(cudaMalloc((void**)&d_send, message));
                 cuda_check(cudaMalloc((void**)&d_recv, message));
-                cuda_check(cudaMemset(d_send, 'a', message));
-                cuda_check(cudaMemset(d_recv, 0, message));
 
                 char *h_send = nullptr, *h_recv = nullptr;
                 cuda_check(cudaMallocHost((void**)&h_send, message));
                 cuda_check(cudaMallocHost((void**)&h_recv, message));
-                memset(h_send, 'a', message);
+
+                fill_with_random_pattern(h_send, (size_t)message);
                 memset(h_recv, 0, message);
+
+                cuda_check(cudaMemcpy(d_send, h_send, message, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemset(d_recv, 0, message));
+
 #else
                 char *send_buf = (char *)malloc(message);
                 char *recv_buf = (char *)malloc(message);
-                memset(send_buf, 'a', message);
+                fill_with_random_pattern(send_buf, (size_t)message);
                 memset(recv_buf, 0, message);
 #endif
 
@@ -568,15 +598,15 @@ int main(int argc, char **argv)
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                hipError_t a_cuerr1 = hipMemset(aa_send_dev, 'a', aa_total_bytes);
+                char *aa_send_host = (char*) malloc(aa_total_bytes);
+                char *aa_recv_host = (char*) malloc(aa_total_bytes);
+                fill_with_random_pattern(aa_send_host, aa_total_bytes);
+                memset(aa_recv_host, 0, aa_total_bytes);
+
+                hipError_t a_cuerr1 = hipMemcpy(aa_send_dev, aa_send_host, aa_total_bytes, hipMemcpyHostToDevice);
                 assert(a_cuerr1 == hipSuccess);
                 hipError_t a_cuerr2 = hipMemset(aa_recv_dev, 0, aa_total_bytes);
                 assert(a_cuerr2 == hipSuccess);
-
-                char *aa_send_host = (char*) malloc(aa_total_bytes);
-                char *aa_recv_host = (char*) malloc(aa_total_bytes);
-                memset(aa_send_host, 'a', aa_total_bytes);
-                memset(aa_recv_host, 0, aa_total_bytes);
 
 #elif defined(USE_CUDA)
                 int a_dev_count = 0;
@@ -587,19 +617,22 @@ int main(int argc, char **argv)
                 char *ad_recv = nullptr;
                 cuda_check(cudaMalloc((void**)&ad_send, aa_total_bytes));
                 cuda_check(cudaMalloc((void**)&ad_recv, aa_total_bytes));
-                cuda_check(cudaMemset(ad_send, 'a', aa_total_bytes));
-                cuda_check(cudaMemset(ad_recv, 0, aa_total_bytes));
 
                 char *ah_send = nullptr;
                 char *ah_recv = nullptr;
                 cuda_check(cudaMallocHost((void**)&ah_send, aa_total_bytes));
                 cuda_check(cudaMallocHost((void**)&ah_recv, aa_total_bytes));
-                memset(ah_send, 'a', aa_total_bytes);
+
+                fill_with_random_pattern(ah_send, aa_total_bytes);
                 memset(ah_recv, 0, aa_total_bytes);
+
+                cuda_check(cudaMemcpy(ad_send, ah_send, aa_total_bytes, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemset(ad_recv, 0, aa_total_bytes));
+
 #else
                 char *aa_send = (char*) malloc(aa_total_bytes);
                 char *aa_recv = (char*) malloc(aa_total_bytes);
-                memset(aa_send, 'b', aa_total_bytes);
+                fill_with_random_pattern(aa_send, aa_total_bytes);
                 memset(aa_recv,  0, aa_total_bytes);
 #endif
 
@@ -610,7 +643,7 @@ int main(int argc, char **argv)
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
-                    hipMemcpy(aa_send_dev, aa_send_host, aa_total_bytes, hipMemcpyHostToDevice);
+                    hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
                     hipDeviceSynchronize();
                     MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
                     hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
@@ -718,15 +751,18 @@ int main(int argc, char **argv)
 
                 cuda_check(cudaMalloc((void**)&rd_d_send, red_count));
                 cuda_check(cudaMalloc((void**)&rd_d_recv, red_count));
-                cuda_check(cudaMemset(rd_d_send, 'r', red_count));
-                cuda_check(cudaMemset(rd_d_recv, 0,   red_count));
 
                 char *rd_h_send=nullptr;
                 char *rd_h_recv=nullptr;
                 cuda_check(cudaMallocHost((void**)&rd_h_send, red_count));
                 cuda_check(cudaMallocHost((void**)&rd_h_recv, red_count));
-                memset(rd_h_send, 'r', red_count);
+
+                fill_with_random_pattern(rd_h_send, red_count);
                 memset(rd_h_recv, 0,   red_count);
+
+                cuda_check(cudaMemcpy(rd_d_send, rd_h_send, red_count, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemset(rd_d_recv, 0,   red_count));
+
 #elif defined(USE_HIP)
                 char *rd_d_send=nullptr;
                 char *rd_d_recv=nullptr;
@@ -739,19 +775,19 @@ int main(int argc, char **argv)
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                hipError_t a_cuerr1 = hipMemset(rd_d_send, 'a', red_count);
+                char *rd_h_send = (char*)malloc(red_count);
+                char *rd_h_recv = (char*)malloc(red_count);
+                fill_with_random_pattern(rd_h_send, red_count);
+                memset(rd_h_recv, 0,   red_count);
+
+                hipError_t a_cuerr1 = hipMemcpy(rd_d_send, rd_h_send, red_count, hipMemcpyHostToDevice);
                 assert(a_cuerr1 == hipSuccess);
                 hipError_t a_cuerr2 = hipMemset(rd_d_recv, 0, red_count);
                 assert(a_cuerr2 == hipSuccess);
-
-                char *rd_h_send = (char*)malloc(red_count);
-                char *rd_h_recv = (char*)malloc(red_count);
-                memset(rd_h_send, 'r', red_count);
-                memset(rd_h_recv, 0,   red_count);
 #else
                 char *rd_send = (char*)malloc(red_count);
                 char *rd_recv = (char*)malloc(red_count);
-                memset(rd_send, 'r', red_count);
+                fill_with_random_pattern(rd_send, red_count);
                 memset(rd_recv, 0,   red_count);
 #endif
 
@@ -860,15 +896,18 @@ int main(int argc, char **argv)
                 char *ar_d_recv=nullptr;
                 cuda_check(cudaMalloc((void**)&ar_d_send, ar_count));
                 cuda_check(cudaMalloc((void**)&ar_d_recv, ar_count));
-                cuda_check(cudaMemset(ar_d_send, 'a', ar_count));
-                cuda_check(cudaMemset(ar_d_recv, 0,   ar_count));
 
                 char *ar_h_send=nullptr;
                 char *ar_h_recv=nullptr;
                 cuda_check(cudaMallocHost((void**)&ar_h_send, ar_count));
                 cuda_check(cudaMallocHost((void**)&ar_h_recv, ar_count));
-                memset(ar_h_send, 'a', ar_count);
+
+                fill_with_random_pattern(ar_h_send, ar_count);
                 memset(ar_h_recv, 0,   ar_count);
+
+                cuda_check(cudaMemcpy(ar_d_send, ar_h_send, ar_count, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemset(ar_d_recv, 0,   ar_count));
+
 #elif defined(USE_HIP)
                 char *ar_d_send=nullptr;
                 char *ar_d_recv=nullptr;
@@ -881,19 +920,19 @@ int main(int argc, char **argv)
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                hipError_t a_cuerr1 = hipMemset(ar_d_send, 'a', ar_count);
+                char *ar_h_send = (char*)malloc(ar_count);
+                char *ar_h_recv = (char*)malloc(ar_count);
+                fill_with_random_pattern(ar_h_send, ar_count);
+                memset(ar_h_recv, 0,   ar_count);
+
+                hipError_t a_cuerr1 = hipMemcpy(ar_d_send, ar_h_send, ar_count, hipMemcpyHostToDevice);
                 assert(a_cuerr1 == hipSuccess);
                 hipError_t a_cuerr2 = hipMemset(ar_d_recv, 0, ar_count);
                 assert(a_cuerr2 == hipSuccess);
-
-                char *ar_h_send = (char*)malloc(ar_count);
-                char *ar_h_recv = (char*)malloc(ar_count);
-                memset(ar_h_send, 'a', ar_count);
-                memset(ar_h_recv, 0,   ar_count);
 #else
                 char *ar_send = (char*)malloc(ar_count);
                 char *ar_recv = (char*)malloc(ar_count);
-                memset(ar_send, 'a', ar_count);
+                fill_with_random_pattern(ar_send, ar_count);
                 memset(ar_recv, 0,   ar_count);
 #endif
 
