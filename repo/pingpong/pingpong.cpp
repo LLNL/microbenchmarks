@@ -95,6 +95,78 @@ void fill_with_random_pattern(char* buf, size_t len)
     }
 }
 
+struct RankPair {
+    int src;
+    int dst;
+};
+
+static std::vector<RankPair>
+build_pingpong_pairs(const std::string& region_label,
+                     int size,
+                     int sys_cores_per_socket,
+                     int sys_cores_per_node)
+{
+    std::vector<RankPair> pairs;
+
+    auto add_pair = [&](int s, int d) {
+        if (s < 0 || d < 0 || s >= size || d >= size)
+            return;
+        pairs.push_back({s, d});
+    };
+
+    if (region_label == "Same Node Same Socket") {
+        int rps = sys_cores_per_socket;
+        if (rps < 2) return pairs;
+
+        int s0 = 0;
+        int s1 = rps / 4;
+        int s2 = rps / 2;
+        int s3 = rps - 2;
+
+        add_pair(s0, s0 + 1);
+        add_pair(s1, s1 + 1);
+        add_pair(s2, s2 + 1);
+        add_pair(s3, s3 + 1);
+
+        return pairs;
+    }
+
+    if (region_label == "Same Node Different Socket") {
+        int rps = sys_cores_per_socket;
+        int delta = rps;
+
+        if (2 * delta > size)
+            return pairs; // not enough ranks
+
+        int srcs[4] = { 0, delta / 4, delta / 2, delta - 1 };
+
+        for (int s : srcs)
+            add_pair(s, s + delta);
+
+        return pairs;
+    }
+
+    int nodes_in_comm = 0;
+    {
+        std::stringstream ss(region_label);
+        ss >> nodes_in_comm; // stops at "nodes"
+    }
+
+    if (nodes_in_comm >= 2) {
+        int rpn   = sys_cores_per_node;
+        int delta = (nodes_in_comm / 2) * rpn;
+
+        // We spread srcs across the first node:
+        int srcs[4] = { 0, rpn / 4, rpn / 2, rpn - 1 };
+
+        for (int s : srcs)
+            add_pair(s, s + delta);
+    }
+
+    return pairs;
+}
+
+
 int main(int argc, char **argv)
 {
     int rank, size;
@@ -373,38 +445,63 @@ int main(int argc, char **argv)
         mgr[message].start();
 #endif
 
-        // ===================== PINGPONG =====================
+                // ===================== PINGPONG =====================
         if (op == OpKind::PingPong || op == OpKind::All)
         {
             for (int partner_rank : partners)
             {
                 std::string region_label = region_names[partner_rank];
 
-                if (rank != 0 && rank != partner_rank)
+                // Build the 4 (or fewer) pairs for this region
+                std::vector<RankPair> pairs =
+                    build_pingpong_pairs(region_label, size,
+                                         sys_cores_per_socket, sys_cores_per_node);
+
+                if (pairs.empty()) {
+                    if (rank == 0)
+                        printf("Skipping region %s: no valid pairs\n",
+                               region_label.c_str());
                     continue;
+                }
+
+                // Map each rank to its partner, or MPI_PROC_NULL if not in any pair
+                std::vector<int> my_partner(size, MPI_PROC_NULL);
+                for (auto &p : pairs) {
+                    my_partner[p.src] = p.dst;
+                    my_partner[p.dst] = p.src;
+                }
+
+                int partner = my_partner[rank];
+                if (partner == MPI_PROC_NULL) {
+                    // This rank does not participate in this region's pingpong
+                    continue;
+                }
 
                 if (rank == 0)
                 {
-                    printf("\n--- Testing %s (PINGPONG) between ranks 0 (%s) and %d (%s) ---\n",
-                           region_label.c_str(),
-                           all_hostnames[0], partner_rank, all_hostnames[partner_rank]);
+                    printf("\n--- Testing %s (PINGPONG) with %zu pairs ---\n",
+                           region_label.c_str(), pairs.size());
+                    for (auto &p : pairs) {
+                        printf("  pair %d (%s) <-> %d (%s)\n",
+                               p.src, all_hostnames[p.src],
+                               p.dst, all_hostnames[p.dst]);
+                    }
 
 #if defined(USE_CALIPER)
-                    std::string comm_pair = "0(" + std::string(all_hostnames[0]) + ")<->" +
-                                            std::to_string(partner_rank) + "(" + std::string(all_hostnames[partner_rank]) +
-                                            ")";
-                    all_comm_pairs.push_back(comm_pair);
-
-                    cali_set_int(src_rank_attr, 0);
-                    cali_set_int(dest_rank_attr, partner_rank);
-                    cali_set_int(src_node_attr, extract_node_number(all_hostnames[0]));
-                    cali_set_int(dest_node_attr, extract_node_number(all_hostnames[partner_rank]));
+                    // Use the first pair as representative for Caliper attributes
+                    cali_set_int(src_rank_attr, pairs[0].src);
+                    cali_set_int(dest_rank_attr, pairs[0].dst);
+                    cali_set_int(src_node_attr,
+                                 extract_node_number(all_hostnames[pairs[0].src]));
+                    cali_set_int(dest_node_attr,
+                                 extract_node_number(all_hostnames[pairs[0].dst]));
 #endif
                 }
 
                 double total_time = 0.0;
                 int warmup = 1;
 
+                // ---------- buffer allocation ----------
 #if defined(USE_HIP)
                 char *send_buf;
                 char *recv_buf;
@@ -413,11 +510,11 @@ int main(int argc, char **argv)
                 hipError_t err2 = hipMalloc((void**)&recv_buf, message);
 
                 if (err1 != hipSuccess || err2 != hipSuccess) {
-                    fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(err1), hipGetErrorString(err2));
+                    fprintf(stderr, "HIP malloc failed: %s %s\n",
+                            hipGetErrorString(err1), hipGetErrorString(err2));
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                // host pattern for HIP send buffer
                 {
                     char* h_rand = (char*)malloc(message);
                     fill_with_random_pattern(h_rand, (size_t)message);
@@ -455,94 +552,118 @@ int main(int argc, char **argv)
                 memset(recv_buf, 0, message);
 #endif
 
+                // ---------- warmup ----------
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region);
 #endif
-
                 for (int i = 0; i < warmup; i++)
                 {
-                    if (rank == 0)
-                    {
 #if defined(USE_HIP)
-                        MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
+                    if (rank < partner) {
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
                                  MPI_STATUS_IGNORE);
-#elif defined(USE_CUDA)
-                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                        MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                        MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-#else
-                        MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-#endif
+                    } else {
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
-                    else if (rank == partner_rank)
-                    {
-#if defined(USE_HIP)
-                        MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 #elif defined(USE_CUDA)
-                        MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    if (rank < partner) {
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                        MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(h_recv, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                    } else {
+                        MPI_Recv(h_recv, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
                         cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                        MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-#else
-                        MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-#endif
+                        MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
+#else
+                    if (rank < partner) {
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                    } else {
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                    }
+#endif
                 }
-
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
+
+                // ---------- timed ping-pong (multiple pairs at once) ----------
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
 
                 for (int i = 0; i < PING_PONG_LIMIT; i++)
                 {
-                    if (rank == 0)
-                    {
-#if defined(USE_CUDA)
-                        double start = MPI_Wtime();
-                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                        MPI_Send(h_send, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                        MPI_Recv(h_recv, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
-                        double end = MPI_Wtime();
-#else
-                        double start = MPI_Wtime();
-                        MPI_Send(send_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner_rank, 0, MPI_COMM_WORLD,
+                    double local_rtt = 0.0;
+
+#if defined(USE_HIP)
+                    double start = MPI_Wtime();
+                    if (rank < partner) {
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
                                  MPI_STATUS_IGNORE);
-                        double end = MPI_Wtime();
-#endif
-                        double rtt = end - start;
-                        total_time += rtt;
-
-                        if(rtt < min_rtt) min_rtt = rtt;
-                        if(rtt > max_rtt) max_rtt = rtt;
-                        ++iters;
-
+                    } else {
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
-                    else if (rank == partner_rank)
-                    {
-#if defined(USE_CUDA)
-                        MPI_Recv(h_recv, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    double end = MPI_Wtime();
+#elif defined(USE_CUDA)
+                    double start = MPI_Wtime();
+                    if (rank < partner) {
+                        cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
+                        MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(h_recv, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
+                    } else {
+                        MPI_Recv(h_recv, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
                         cuda_check(cudaMemcpy(d_recv, h_recv, message, cudaMemcpyHostToDevice));
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
-                        MPI_Send(h_send, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                        MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                    }
+                    double end = MPI_Wtime();
 #else
-                        MPI_Recv(recv_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+                    double start = MPI_Wtime();
+                    if (rank < partner) {
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                    } else {
+                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 MPI_STATUS_IGNORE);
+                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                    }
+                    double end = MPI_Wtime();
 #endif
+                    local_rtt = end - start;
+
+                    // Take max RTT across all pairs in this region/iteration
+                    double iter_max = 0.0;
+                    MPI_Reduce(&local_rtt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+                    if (rank == 0) {
+                        total_time += iter_max;
+                        if (iter_max < min_rtt) min_rtt = iter_max;
+                        if (iter_max > max_rtt) max_rtt = iter_max;
+                        ++iters;
                     }
                 }
 
-                if(rank == 0)
+                if (rank == 0)
                 {
                     double avg_rtt = (iters > 0) ? (total_time / iters) : 0.0;
 #if defined(USE_CALIPER)
@@ -556,6 +677,8 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
+
+                // ---------- cleanup ----------
 #if defined(USE_HIP)
                 hipFree(send_buf);
                 hipFree(recv_buf);
