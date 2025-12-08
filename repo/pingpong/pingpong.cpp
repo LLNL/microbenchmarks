@@ -104,7 +104,8 @@ static std::vector<RankPair>
 build_pingpong_pairs(const std::string& region_label,
                      int size,
                      int sys_cores_per_socket,
-                     int sys_cores_per_node)
+                     int sys_cores_per_node,
+                     int max_pairs)
 {
     std::vector<RankPair> pairs;
 
@@ -163,6 +164,10 @@ build_pingpong_pairs(const std::string& region_label,
             add_pair(s, s + delta);
     }
 
+    if (max_pairs > 0 && (int)pairs.size() > max_pairs){
+        pairs.resize(max_pairs);
+    }
+
     return pairs;
 }
 
@@ -200,6 +205,7 @@ int main(int argc, char **argv)
     const char *warmup_region_aa = "warmup_aa";
     const char *warmup_region_red = "warmup_red";
     const char *warmup_region_ar = "warmup_ar";
+    int pingpong_num_pairs = 1;
 
     // ---- default to PingPong ----
     OpKind op = OpKind::PingPong;
@@ -457,7 +463,7 @@ int main(int argc, char **argv)
                     build_pingpong_pairs(region_label,
                                          size,
                                          sys_cores_per_socket,
-                                         sys_cores_per_node);
+                                         sys_cores_per_node, pingpong_num_pairs);
 
                 if (pairs.empty()) {
                     if (rank == 0)
