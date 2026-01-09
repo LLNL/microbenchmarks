@@ -205,7 +205,7 @@ int main(int argc, char **argv)
     const char *warmup_region_aa = "warmup_aa";
     const char *warmup_region_red = "warmup_red";
     const char *warmup_region_ar = "warmup_ar";
-    int pingpong_num_pairs = 1;
+    int pingpong_num_pairs = 4;
 
     // ---- default to PingPong ----
     OpKind op = OpKind::PingPong;
