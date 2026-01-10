@@ -295,6 +295,7 @@ int main(int argc, char **argv)
         rankmap << "}";
         adiak::value("rank_node_map", rankmap.str());
         adiak::value("iterations", PING_PONG_LIMIT);
+        adiak::value("pingpong_num_pairs", pingpong_num_pairs);
 #endif
     }
 
