@@ -652,13 +652,13 @@ int main(int argc, char **argv)
                     }
 #else
                     if (rank < partner) {
-                        MPI_ISend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
-                        MPI_IRecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                        MPI_Isend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                        MPI_Irecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
                                  &rreq);
                     } else {
-                        MPI_IRecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                        MPI_Irecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
                                  &rreq);
-                        MPI_ISend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                        MPI_Isend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
                     }
                     MPI_Wait( &rreq, MPI_STATUS_IGNORE);
                     MPI_Wait( &sreq, MPI_STATUS_IGNORE);
