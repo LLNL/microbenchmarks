@@ -614,6 +614,7 @@ int main(int argc, char **argv)
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
+                MPI_Request rreq, sreq;
 
                 // One rank per pair records timings (the "lower" rank)
                 bool i_am_timing_rank = (rank < partner);
@@ -651,14 +652,16 @@ int main(int argc, char **argv)
                     }
 #else
                     if (rank < partner) {
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
+                        MPI_ISend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                        MPI_IRecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 &rreq);
                     } else {
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_IRecv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                 &rreq);
+                        MPI_ISend(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
                     }
+                    MPI_Wait( &rreq, MPI_STATUS_IGNORE);
+                    MPI_Wait( &sreq, MPI_STATUS_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
