@@ -196,6 +196,7 @@ int main(int argc, char **argv)
 #endif
 
     int PING_PONG_LIMIT = 10;
+    const int WINDOW_SIZE = 64;
     int msg_size = 1;
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
@@ -557,25 +558,29 @@ int main(int argc, char **argv)
                 cuda_check(cudaMemset(d_recv, 0, message));
 
 #else
-                const int iters_total = PING_PONG_LIMIT;
+                char* send_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
+                char* recv_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
 
-                char* send_flat = (char*)malloc((size_t)iters_total * (size_t)message);
-                char* recv_flat = (char*)malloc((size_t)iters_total * (size_t)message);
+                std::vector<char*> send_rows(WINDOW_SIZE);
+                std::vector<char*> recv_rows(WINDOW_SIZE);
 
-                std::vector<char*> send_rows(iters_total);
-                std::vector<char*> recv_rows(iters_total);
-                for (int it = 0; it < iters_total; ++it) {
-                    send_rows[it] = send_flat + (size_t)it * (size_t)message;
-                    recv_rows[it] = recv_flat + (size_t)it * (size_t)message;
-                    fill_with_random_pattern(send_rows[it], (size_t)message);
-                    memset(recv_rows[it], 0, (size_t)message);
+                for (int j = 0; j < WINDOW_SIZE; ++j) {
+                    send_rows[j] = send_flat + (size_t)j * (size_t)message;
+                    recv_rows[j] = recv_flat + (size_t)j * (size_t)message;
+                    fill_with_random_pattern(send_rows[j], (size_t)message);
+                    memset(recv_rows[j], 0, (size_t)message);
                 }
+
+                std::vector<MPI_Request> sreqs(WINDOW_SIZE);
+                std::vector<MPI_Request> rreqs(WINDOW_SIZE);
+
 #endif
 
                 // ---------- warmup ----------
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region);
 #endif
+                const int tag_base = 1000;
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
@@ -603,19 +608,22 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    int it = i % iters_total;
-                    char* srow = send_rows[it];
-                    char* rrow = recv_rows[it];
+                    for (int j = 0; j < WINDOW_SIZE; ++j){
+                        fill_with_random_pattern(send_rows[j], (size_t)message);
+                    }                    
 
-                    if (rank < partner) {
-                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
-                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                MPI_STATUS_IGNORE);
-                    } else {
-                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                MPI_STATUS_IGNORE);
-                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(recv_rows[j], message, MPI_CHAR, partner,
+                                tag_base + j, MPI_COMM_WORLD, &rreqs[j]);
                     }
+
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(send_rows[j], message, MPI_CHAR, partner,
+                                tag_base + j, MPI_COMM_WORLD, &sreqs[j]);
+                    }
+
+                    MPI_Waitall(WINDOW_SIZE, rreqs.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, sreqs.data(), MPI_STATUSES_IGNORE);
 #endif
                 }
 #if defined(USE_CALIPER)
@@ -627,17 +635,15 @@ int main(int argc, char **argv)
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
-                MPI_Request rreq, sreq;
 
                 // One rank per pair records timings (the "lower" rank)
                 bool i_am_timing_rank = (rank < partner);
 
+                MPI_Barrier(MPI_COMM_WORLD);
+
                 for (int i = 0; i < PING_PONG_LIMIT; i++)
                 {
                     double start = 0.0, end = 0.0;
-
-                    if (i_am_timing_rank)
-                        start = MPI_Wtime();
 
 #if defined(USE_HIP)
                     if (rank < partner) {
@@ -664,18 +670,26 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    char* srow = send_rows[i];
-                    char* rrow = recv_rows[i];
-
-                    if (rank < partner) {
-                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
-                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
-                    } else {
-                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
-                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                    for (int j = 0; j < WINDOW_SIZE; ++j){
+                        fill_with_random_pattern(send_rows[j], (size_t)message);
                     }
-                    MPI_Wait(&rreq, MPI_STATUS_IGNORE);
-                    MPI_Wait(&sreq, MPI_STATUS_IGNORE);
+
+                    if (i_am_timing_rank){
+                        start = MPI_Wtime();
+                    }
+
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(recv_rows[j], message, MPI_CHAR, partner,
+                                tag_base + j, MPI_COMM_WORLD, &rreqs[j]);
+                    }
+
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(send_rows[j], message, MPI_CHAR, partner,
+                                tag_base + j, MPI_COMM_WORLD, &sreqs[j]);
+                    }
+
+                    MPI_Waitall(WINDOW_SIZE, rreqs.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, sreqs.data(), MPI_STATUSES_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
