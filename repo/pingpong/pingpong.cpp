@@ -559,16 +559,12 @@ int main(int argc, char **argv)
 #else
                 const int iters_total = PING_PONG_LIMIT;
 
-                char* send_flat = (char*)malloc((size_t)iters_total * (size_t)message);
-                char* recv_flat = (char*)malloc((size_t)iters_total * (size_t)message);
+                std::vector<std::vector<char>> send_mat(iters_total, std::vector<char>(message));
+                std::vector<std::vector<char>> recv_mat(iters_total, std::vector<char>(message));
 
-                std::vector<char*> send_rows(iters_total);
-                std::vector<char*> recv_rows(iters_total);
                 for (int it = 0; it < iters_total; ++it) {
-                    send_rows[it] = send_flat + (size_t)it * (size_t)message;
-                    recv_rows[it] = recv_flat + (size_t)it * (size_t)message;
-                    fill_with_random_pattern(send_rows[it], (size_t)message);
-                    memset(recv_rows[it], 0, (size_t)message);
+                    fill_with_random_pattern(send_mat[it].data(), (size_t)message);
+                    memset(recv_mat[it].data(), 0, (size_t)message);
                 }
 #endif
 
@@ -604,8 +600,8 @@ int main(int argc, char **argv)
                     }
 #else
                     int it = i % iters_total;
-                    char* srow = send_rows[it];
-                    char* rrow = recv_rows[it];
+                    char* srow = send_mat[it].data();
+                    char* rrow = recv_mat[it].data();
 
                     if (rank < partner) {
                         MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
@@ -664,8 +660,8 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    char* srow = send_rows[i];
-                    char* rrow = recv_rows[i];
+                    char* srow = send_mat[i].data();
+                    char* rrow = recv_mat[i].data();
 
                     if (rank < partner) {
                         MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
@@ -719,8 +715,8 @@ int main(int argc, char **argv)
                 cuda_check(cudaFree(d_send));
                 cuda_check(cudaFree(d_recv));
 #else
-                free(send_flat);
-                free(recv_flat);
+                // free(send_flat);
+                // free(recv_flat);
 #endif
             } // end for (partner_rank : partners)
         }     // end if (PingPong || All)
