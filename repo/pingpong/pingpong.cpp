@@ -171,6 +171,7 @@ build_pingpong_pairs(const std::string& region_label,
     return pairs;
 }
 
+
 int main(int argc, char **argv)
 {
     int rank, size;
@@ -195,7 +196,6 @@ int main(int argc, char **argv)
 #endif
 
     int PING_PONG_LIMIT = 10;
-    const int WINDOW_SIZE = 1;
     int msg_size = 1;
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
@@ -217,6 +217,7 @@ int main(int argc, char **argv)
         "[-O pingpong|alltoall|reduce|allreduce|all]\n"
         "Default: -O pingpong\n";
 
+    // add 'O:' to parse the selector
     while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:O:")) != -1)
     {
         switch (opt)
@@ -229,7 +230,7 @@ int main(int argc, char **argv)
                 PING_PONG_LIMIT = atoi(optarg);
                 break;
             case 'p':
-                // kept for compatibility
+                // kept for compatibility; you can parse partners here if desired
                 break;
             case 'm':
                 msg_size = atoi(optarg);
@@ -511,7 +512,6 @@ int main(int argc, char **argv)
 
                 // ---------- buffer allocation ----------
 #if defined(USE_HIP)
-                // (kept exactly like your older HIP path: device pointers passed to MPI)
                 char *send_buf;
                 char *recv_buf;
 
@@ -537,7 +537,6 @@ int main(int argc, char **argv)
                 assert(cuerr2 == hipSuccess);
 
 #elif defined(USE_CUDA)
-                // (kept exactly like your older CUDA path: stage through pinned host)
                 int dev_count = 0;
                 cuda_check(cudaGetDeviceCount(&dev_count));
                 cuda_check(cudaSetDevice(rank % (dev_count > 0 ? dev_count : 1)));
@@ -555,33 +554,28 @@ int main(int argc, char **argv)
                 memset(h_recv, 0, message);
 
                 cuda_check(cudaMemcpy(d_send, h_send, message, cudaMemcpyHostToDevice));
-                cuda_check(cudaMemset(d_recv, 0, message);
+                cuda_check(cudaMemset(d_recv, 0, message));
 
 #else
-                // MPI-only: allocate + fill ONCE (no per-iteration refill)
-                char* send_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
-                char* recv_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
+                const int iters_total = PING_PONG_LIMIT;
 
-                std::vector<char*> send_rows(WINDOW_SIZE);
-                std::vector<char*> recv_rows(WINDOW_SIZE);
+                char* send_flat = (char*)malloc((size_t)iters_total * (size_t)message);
+                char* recv_flat = (char*)malloc((size_t)iters_total * (size_t)message);
 
-                for (int j = 0; j < WINDOW_SIZE; ++j) {
-                    send_rows[j] = send_flat + (size_t)j * (size_t)message;
-                    recv_rows[j] = recv_flat + (size_t)j * (size_t)message;
-
-                    fill_with_random_pattern(send_rows[j], (size_t)message); // ✅ fill once
-                    memset(recv_rows[j], 0, (size_t)message);
+                std::vector<char*> send_rows(iters_total);
+                std::vector<char*> recv_rows(iters_total);
+                for (int it = 0; it < iters_total; ++it) {
+                    send_rows[it] = send_flat + (size_t)it * (size_t)message;
+                    recv_rows[it] = recv_flat + (size_t)it * (size_t)message;
+                    fill_with_random_pattern(send_rows[it], (size_t)message);
+                    memset(recv_rows[it], 0, (size_t)message);
                 }
-
-                std::vector<MPI_Request> sreqs(WINDOW_SIZE);
-                std::vector<MPI_Request> rreqs(WINDOW_SIZE);
 #endif
 
                 // ---------- warmup ----------
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region);
 #endif
-                const int tag_base = 1000;
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
@@ -609,19 +603,19 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    // ✅ NO refill here
-                    for (int j = 0; j < WINDOW_SIZE; ++j) {
-                        MPI_Irecv(recv_rows[j], message, MPI_CHAR, partner,
-                                  tag_base + j, MPI_COMM_WORLD, &rreqs[j]);
-                    }
+                    int it = i % iters_total;
+                    char* srow = send_rows[it];
+                    char* rrow = recv_rows[it];
 
-                    for (int j = 0; j < WINDOW_SIZE; ++j) {
-                        MPI_Isend(send_rows[j], message, MPI_CHAR, partner,
-                                  tag_base + j, MPI_COMM_WORLD, &sreqs[j]);
+                    if (rank < partner) {
+                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                MPI_STATUS_IGNORE);
+                    } else {
+                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
+                                MPI_STATUS_IGNORE);
+                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
-
-                    MPI_Waitall(WINDOW_SIZE, rreqs.data(), MPI_STATUSES_IGNORE);
-                    MPI_Waitall(WINDOW_SIZE, sreqs.data(), MPI_STATUSES_IGNORE);
 #endif
                 }
 #if defined(USE_CALIPER)
@@ -629,19 +623,21 @@ int main(int argc, char **argv)
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-                // ---------- timed ping-pong ----------
+                // ---------- timed ping-pong (multiple pairs at once) ----------
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
+                MPI_Request rreq, sreq;
 
                 // One rank per pair records timings (the "lower" rank)
                 bool i_am_timing_rank = (rank < partner);
 
-                MPI_Barrier(MPI_COMM_WORLD);
-
                 for (int i = 0; i < PING_PONG_LIMIT; i++)
                 {
                     double start = 0.0, end = 0.0;
+
+                    if (i_am_timing_rank)
+                        start = MPI_Wtime();
 
 #if defined(USE_HIP)
                     if (rank < partner) {
@@ -668,30 +664,22 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    // ✅ NO refill here
-                    if (i_am_timing_rank){
-                        start = MPI_Wtime();
-                    }
+                    char* srow = send_rows[i];
+                    char* rrow = recv_rows[i];
 
-                    for (int j = 0; j < WINDOW_SIZE; ++j) {
-                        MPI_Irecv(recv_rows[j], message, MPI_CHAR, partner,
-                                  tag_base + j, MPI_COMM_WORLD, &rreqs[j]);
+                    if (rank < partner) {
+                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
+                    } else {
+                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
+                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
                     }
-
-                    for (int j = 0; j < WINDOW_SIZE; ++j) {
-                        MPI_Isend(send_rows[j], message, MPI_CHAR, partner,
-                                  tag_base + j, MPI_COMM_WORLD, &sreqs[j]);
-                    }
-
-                    MPI_Waitall(WINDOW_SIZE, rreqs.data(), MPI_STATUSES_IGNORE);
-                    MPI_Waitall(WINDOW_SIZE, sreqs.data(), MPI_STATUSES_IGNORE);
-
-                    if (i_am_timing_rank){
-                        end = MPI_Wtime();
-                    }
+                    MPI_Wait(&rreq, MPI_STATUS_IGNORE);
+                    MPI_Wait(&sreq, MPI_STATUS_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
+                        end = MPI_Wtime();
                         double rtt = end - start;
                         total_time += rtt;
                         if (rtt < min_rtt) min_rtt = rtt;
@@ -711,6 +699,7 @@ int main(int argc, char **argv)
                     cali_set_double(pp_min_time_sec_attr, min_rtt);
 #endif
 
+                    // Optional: print per-pair stats
                     printf("PINGPONG %s pair (%d,%d): avg=%g s, min=%g s, max=%g s\n",
                            region_label.c_str(), rank, partner,
                            avg_rtt, min_rtt, max_rtt);
