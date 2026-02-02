@@ -562,7 +562,6 @@ int main(int argc, char **argv)
                 cuda_check(cudaMemset(d_recv, 0, message);
 
 #else
-                // MPI-only path: always per-window-slot buffers (no SINGLE/MULTIPLE behavior)
                 char *send_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
                 char *recv_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
 
@@ -572,7 +571,7 @@ int main(int argc, char **argv)
                 for (int j = 0; j < WINDOW_SIZE; ++j) {
                     s_buf[j] = send_flat + (size_t)j * (size_t)message;
                     r_buf[j] = recv_flat + (size_t)j * (size_t)message;
-                    fill_with_random_pattern(s_buf[j], (size_t)message); // fill once
+                    fill_with_random_pattern(s_buf[j], (size_t)message);
                     memset(r_buf[j], 0, (size_t)message);
                 }
 
@@ -586,8 +585,7 @@ int main(int argc, char **argv)
 #endif
                 for (int i = 0; i < warmup; i++)
                 {
-#if defined(USE_HIP)
-                    // keep your original HIP blocking order
+#if defined(USE_HIP)er
                     if (rank < partner) {
                         MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                         MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
@@ -598,7 +596,6 @@ int main(int argc, char **argv)
                         MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #elif defined(USE_CUDA)
-                    // keep your original CUDA blocking order (staging through pinned host)
                     if (rank < partner) {
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
@@ -613,7 +610,6 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    // OSU pattern: post all Irecvs, post all Isends, waitall sends, waitall recvs
                     for (int j = 0; j < WINDOW_SIZE; ++j) {
                         MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
                                   MPI_COMM_WORLD, &recv_request[j]);
@@ -622,6 +618,7 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
+                    MPI_Barrier(MPI_COMM_WORLD);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
@@ -681,6 +678,7 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
+                    MPI_Barrier(MPI_COMM_WORLD);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
