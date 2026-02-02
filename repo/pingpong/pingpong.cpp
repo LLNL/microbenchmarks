@@ -618,12 +618,17 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
+                    printf("before MPI_Barrier before inside warmup");
                     MPI_Barrier(MPI_COMM_WORLD);
+                    printf("after MPI_Barrier before waitall inside warmup");
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    printf("After Waitall warmup");
 #endif
                 }
+                printf("before MPI_Barrier outside warmup");
                 MPI_Barrier(MPI_COMM_WORLD);
+                printf("after MPI_Barrier outside warmup");
 
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
@@ -679,9 +684,12 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
+                    printf("before MPI_Barrier inside iteration");
                     MPI_Barrier(MPI_COMM_WORLD);
+                    printf("after MPI_barrier before waitall inside iteration");
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    printf("After MPI_Waitall");
 #endif
 
                     if (i_am_timing_rank) {
@@ -693,7 +701,9 @@ int main(int argc, char **argv)
                         ++iters;
                     }
                 }
+                printf("before MPI_Barrier outside iteration loop");
                 MPI_Barrier(MPI_COMM_WORLD);
+                printf("after MPI_Barrier outside iteration loop");
 
                 if (i_am_timing_rank)
                 {
