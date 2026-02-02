@@ -623,6 +623,7 @@ int main(int argc, char **argv)
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
                 }
+                MPI_Barrier(MPI_COMM_WORLD);
 
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
@@ -692,6 +693,7 @@ int main(int argc, char **argv)
                         ++iters;
                     }
                 }
+                MPI_Barrier(MPI_COMM_WORLD);
 
                 if (i_am_timing_rank)
                 {
