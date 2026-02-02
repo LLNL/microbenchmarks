@@ -559,7 +559,7 @@ int main(int argc, char **argv)
                 memset(h_recv, 0, message);
 
                 cuda_check(cudaMemcpy(d_send, h_send, message, cudaMemcpyHostToDevice));
-                cuda_check(cudaMemset(d_recv, 0, message);
+                cuda_check(cudaMemset(d_recv, 0, message));
 
 #else
                 char *send_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
@@ -585,7 +585,7 @@ int main(int argc, char **argv)
 #endif
                 for (int i = 0; i < warmup; i++)
                 {
-#if defined(USE_HIP)er
+#if defined(USE_HIP)
                     if (rank < partner) {
                         MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                         MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
