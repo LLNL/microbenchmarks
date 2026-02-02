@@ -15,7 +15,7 @@
 #include <limits>
 #include <assert.h>
 #include <limits.h>
-#include <random>   // <--- added
+#include <random>
 
 #if defined(USE_CALIPER)
 #include <caliper/cali.h>
@@ -171,7 +171,6 @@ build_pingpong_pairs(const std::string& region_label,
     return pairs;
 }
 
-
 int main(int argc, char **argv)
 {
     int rank, size;
@@ -196,6 +195,7 @@ int main(int argc, char **argv)
 #endif
 
     int PING_PONG_LIMIT = 10;
+    const int WINDOW_SIZE = 1; // OSU-style window exchange; no SINGLE/MULTIPLE modes
     int msg_size = 1;
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
@@ -217,7 +217,6 @@ int main(int argc, char **argv)
         "[-O pingpong|alltoall|reduce|allreduce|all]\n"
         "Default: -O pingpong\n";
 
-    // add 'O:' to parse the selector
     while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:O:")) != -1)
     {
         switch (opt)
@@ -230,7 +229,7 @@ int main(int argc, char **argv)
                 PING_PONG_LIMIT = atoi(optarg);
                 break;
             case 'p':
-                // kept for compatibility; you can parse partners here if desired
+                // kept for compatibility; parse partners here if desired
                 break;
             case 'm':
                 msg_size = atoi(optarg);
@@ -459,7 +458,7 @@ int main(int argc, char **argv)
             {
                 std::string region_label = region_names[partner_rank];
 
-                // Build up to 4 pairs for this region
+                // Build up to N pairs for this region
                 std::vector<RankPair> pairs =
                     build_pingpong_pairs(region_label,
                                          size,
@@ -482,7 +481,6 @@ int main(int argc, char **argv)
 
                 int partner = my_partner[rank];
                 if (partner == MPI_PROC_NULL) {
-                    // This rank does not participate in this region's pingpong
                     continue;
                 }
 
@@ -509,6 +507,13 @@ int main(int argc, char **argv)
 
                 double total_time = 0.0;
                 int warmup = 1;
+
+                // OSU-style directional tags for this pair:
+                // lower rank receives TAG_A and sends TAG_B; higher rank receives TAG_B and sends TAG_A
+                const int TAG_A = 10;
+                const int TAG_B = 100;
+                const int my_recv_tag = (rank < partner) ? TAG_A : TAG_B;
+                const int my_send_tag = (rank < partner) ? TAG_B : TAG_A;
 
                 // ---------- buffer allocation ----------
 #if defined(USE_HIP)
@@ -554,18 +559,25 @@ int main(int argc, char **argv)
                 memset(h_recv, 0, message);
 
                 cuda_check(cudaMemcpy(d_send, h_send, message, cudaMemcpyHostToDevice));
-                cuda_check(cudaMemset(d_recv, 0, message));
+                cuda_check(cudaMemset(d_recv, 0, message);
 
 #else
-                const int iters_total = PING_PONG_LIMIT;
+                // MPI-only path: always per-window-slot buffers (no SINGLE/MULTIPLE behavior)
+                char *send_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
+                char *recv_flat = (char*)malloc((size_t)WINDOW_SIZE * (size_t)message);
 
-                std::vector<std::vector<char>> send_mat(iters_total, std::vector<char>(message));
-                std::vector<std::vector<char>> recv_mat(iters_total, std::vector<char>(message));
+                std::vector<char*> s_buf(WINDOW_SIZE);
+                std::vector<char*> r_buf(WINDOW_SIZE);
 
-                for (int it = 0; it < iters_total; ++it) {
-                    fill_with_random_pattern(send_mat[it].data(), (size_t)message);
-                    memset(recv_mat[it].data(), 0, (size_t)message);
+                for (int j = 0; j < WINDOW_SIZE; ++j) {
+                    s_buf[j] = send_flat + (size_t)j * (size_t)message;
+                    r_buf[j] = recv_flat + (size_t)j * (size_t)message;
+                    fill_with_random_pattern(s_buf[j], (size_t)message); // fill once
+                    memset(r_buf[j], 0, (size_t)message);
                 }
+
+                std::vector<MPI_Request> send_request(WINDOW_SIZE);
+                std::vector<MPI_Request> recv_request(WINDOW_SIZE);
 #endif
 
                 // ---------- warmup ----------
@@ -575,6 +587,7 @@ int main(int argc, char **argv)
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
+                    // keep your original HIP blocking order
                     if (rank < partner) {
                         MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                         MPI_Recv(recv_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
@@ -585,6 +598,7 @@ int main(int argc, char **argv)
                         MPI_Send(send_buf, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #elif defined(USE_CUDA)
+                    // keep your original CUDA blocking order (staging through pinned host)
                     if (rank < partner) {
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
@@ -599,34 +613,33 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    int it = i % iters_total;
-                    char* srow = send_mat[it].data();
-                    char* rrow = recv_mat[it].data();
-
-                    if (rank < partner) {
-                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
-                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                MPI_STATUS_IGNORE);
-                    } else {
-                        MPI_Recv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD,
-                                MPI_STATUS_IGNORE);
-                        MPI_Send(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
+                    // OSU pattern: post all Irecvs, post all Isends, waitall sends, waitall recvs
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
+                                  MPI_COMM_WORLD, &recv_request[j]);
                     }
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
+                                  MPI_COMM_WORLD, &send_request[j]);
+                    }
+                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
                 }
+
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-                // ---------- timed ping-pong (multiple pairs at once) ----------
+                // ---------- timed ping-pong ----------
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
-                MPI_Request rreq, sreq;
 
-                // One rank per pair records timings (the "lower" rank)
                 bool i_am_timing_rank = (rank < partner);
+
+                MPI_Barrier(MPI_COMM_WORLD);
 
                 for (int i = 0; i < PING_PONG_LIMIT; i++)
                 {
@@ -660,18 +673,16 @@ int main(int argc, char **argv)
                         MPI_Send(h_send, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD);
                     }
 #else
-                    char* srow = send_mat[i].data();
-                    char* rrow = recv_mat[i].data();
-
-                    if (rank < partner) {
-                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
-                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
-                    } else {
-                        MPI_Irecv(rrow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &rreq);
-                        MPI_Isend(srow, message, MPI_CHAR, partner, 0, MPI_COMM_WORLD, &sreq);
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
+                                  MPI_COMM_WORLD, &recv_request[j]);
                     }
-                    MPI_Wait(&rreq, MPI_STATUS_IGNORE);
-                    MPI_Wait(&sreq, MPI_STATUS_IGNORE);
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
+                                  MPI_COMM_WORLD, &send_request[j]);
+                    }
+                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
@@ -695,7 +706,6 @@ int main(int argc, char **argv)
                     cali_set_double(pp_min_time_sec_attr, min_rtt);
 #endif
 
-                    // Optional: print per-pair stats
                     printf("PINGPONG %s pair (%d,%d): avg=%g s, min=%g s, max=%g s\n",
                            region_label.c_str(), rank, partner,
                            avg_rtt, min_rtt, max_rtt);
@@ -715,8 +725,8 @@ int main(int argc, char **argv)
                 cuda_check(cudaFree(d_send));
                 cuda_check(cudaFree(d_recv));
 #else
-                // free(send_flat);
-                // free(recv_flat);
+                free(send_flat);
+                free(recv_flat);
 #endif
             } // end for (partner_rank : partners)
         }     // end if (PingPong || All)
