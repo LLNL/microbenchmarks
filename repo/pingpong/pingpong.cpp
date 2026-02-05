@@ -618,17 +618,17 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
-                    printf("before MPI_Barrier before inside warmup");
+                    printf("before MPI_Barrier before inside warmup %d\n", i);
                     MPI_Barrier(MPI_COMM_WORLD);
-                    printf("after MPI_Barrier before waitall inside warmup");
+                    printf("after MPI_Barrier before waitall inside warmup %d\n", i);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
-                    printf("After Waitall warmup");
+                    printf("After Waitall warmup %d\n", i);
 #endif
                 }
-                printf("before MPI_Barrier outside warmup");
+                printf("before MPI_Barrier outside warmup\n");
                 MPI_Barrier(MPI_COMM_WORLD);
-                printf("after MPI_Barrier outside warmup");
+                printf("after MPI_Barrier outside warmup\n");
 
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
@@ -684,12 +684,12 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
-                    printf("before MPI_Barrier inside iteration");
+                    printf("before MPI_Barrier inside iteration %d\n", i);
                     MPI_Barrier(MPI_COMM_WORLD);
-                    printf("after MPI_barrier before waitall inside iteration");
+                    printf("after MPI_barrier before waitall inside iteration %d\n", i);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
-                    printf("After MPI_Waitall");
+                    printf("After MPI_Waitall %d\n", i);
 #endif
 
                     if (i_am_timing_rank) {
@@ -701,9 +701,9 @@ int main(int argc, char **argv)
                         ++iters;
                     }
                 }
-                printf("before MPI_Barrier outside iteration loop");
+                printf("before MPI_Barrier outside iteration loop\n");
                 MPI_Barrier(MPI_COMM_WORLD);
-                printf("after MPI_Barrier outside iteration loop");
+                printf("after MPI_Barrier outside iteration loop\n");
 
                 if (i_am_timing_rank)
                 {
