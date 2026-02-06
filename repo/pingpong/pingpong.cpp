@@ -120,9 +120,9 @@ build_pingpong_pairs(const std::string& region_label,
         if (rps < 2) return pairs;
 
         int s0 = 0;
-        int s1 = rps / 4;
-        int s2 = rps / 2;
-        int s3 = rps - 2;
+        int s1 = rps / 8;
+        int s2 = rps / 4;
+        int s3 = (rps / 2) - 2;
 
         add_pair(s0, s0 + 1);
         add_pair(s1, s1 + 1);
@@ -139,10 +139,15 @@ build_pingpong_pairs(const std::string& region_label,
         if (2 * delta > size)
             return pairs; // not enough ranks
 
-        int srcs[4] = { 0, delta / 4, delta / 2, delta - 1 };
+        int s0 = 0;
+        int s1 = delta / 8;
+        int s2 = delta / 4;
+        int s3 = (delta / 2) - 1;
 
-        for (int s : srcs)
-            add_pair(s, s + delta);
+        add_pair(s0, rps / 2);
+        add_pair(s1, (rps / 2) + 1);
+        add_pair(s2, (rps / 2) + 2);
+        add_pair(s3, rps - 1);
 
         return pairs;
     }
