@@ -1203,6 +1203,7 @@ int main(int argc, char **argv)
     }
 #endif
 
+    printf("rank %d\n", rank);
     MPI_Finalize();
     return 0;
 }
