@@ -136,9 +136,6 @@ build_pingpong_pairs(const std::string& region_label,
         int rps = sys_cores_per_socket;
         int delta = rps;
 
-        if (2 * delta > size)
-            return pairs; // not enough ranks
-
         int s0 = 0;
         int s1 = delta / 8;
         int s2 = delta / 4;
@@ -489,12 +486,13 @@ int main(int argc, char **argv)
                     continue;
                 }
 
-
+                printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
+                           region_label.c_str(), pairs.size(), partner_rank);
 
                 if (rank == 0)
                 {
-                    printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
-                           region_label.c_str(), pairs.size(), partner_rank);
+                    // printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
+                    //        region_label.c_str(), pairs.size(), partner_rank);
                     for (auto &p : pairs) {
                         printf("  pair %d (%s) <-> %d (%s)\n",
                                p.src, all_hostnames[p.src],
@@ -746,6 +744,7 @@ int main(int argc, char **argv)
                 free(recv_flat);
 #endif
             } // end for (partner_rank : partners)
+            printf("Done with Pingpong");
         }     // end if (PingPong || All)
 
         MPI_Barrier(MPI_COMM_WORLD);
