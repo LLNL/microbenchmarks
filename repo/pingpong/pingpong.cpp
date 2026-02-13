@@ -489,10 +489,12 @@ int main(int argc, char **argv)
                     continue;
                 }
 
+
+
                 if (rank == 0)
                 {
-                    printf("\n--- Testing %s (PINGPONG) with %zu pairs ---\n",
-                           region_label.c_str(), pairs.size());
+                    printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
+                           region_label.c_str(), pairs.size(), partner_rank);
                     for (auto &p : pairs) {
                         printf("  pair %d (%s) <-> %d (%s)\n",
                                p.src, all_hostnames[p.src],
@@ -631,9 +633,9 @@ int main(int argc, char **argv)
                     printf("rank: %d After Waitall warmup %d\n", rank, i);
 #endif
                 }
-                printf("before MPI_Barrier outside warmup\n");
+                printf("rank: %d before MPI_Barrier outside warmup\n", rank);
                 MPI_Barrier(MPI_COMM_WORLD);
-                printf("after MPI_Barrier outside warmup\n");
+                printf("rank: %d after MPI_Barrier outside warmup\n", rank);
 
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
@@ -706,9 +708,9 @@ int main(int argc, char **argv)
                         ++iters;
                     }
                 }
-                printf("before MPI_Barrier outside iteration loop\n");
+                printf("rank: %d before MPI_Barrier outside iteration loop\n", rank);
                 MPI_Barrier(MPI_COMM_WORLD);
-                printf("after MPI_Barrier outside iteration loop\n");
+                printf("rank: %d after MPI_Barrier outside iteration loop\n", rank);
 
                 if (i_am_timing_rank)
                 {
