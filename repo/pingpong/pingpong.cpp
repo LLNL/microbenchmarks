@@ -486,13 +486,13 @@ int main(int argc, char **argv)
                     continue;
                 }
 
-                printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
-                           region_label.c_str(), pairs.size(), partner_rank);
+                // printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
+                //            region_label.c_str(), pairs.size(), partner_rank);
 
                 if (rank == 0)
                 {
-                    // printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
-                    //        region_label.c_str(), pairs.size(), partner_rank);
+                    printf("\n--- Testing %s (PINGPONG) with %zu pairs --- (partner rank: %d) \n",
+                           region_label.c_str(), pairs.size(), partner_rank);
                     for (auto &p : pairs) {
                         printf("  pair %d (%s) <-> %d (%s)\n",
                                p.src, all_hostnames[p.src],
@@ -623,17 +623,17 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
-                    printf("rank: %d before MPI_Barrier before inside warmup %d\n", rank, i);
-                    MPI_Barrier(MPI_COMM_WORLD);
+                    // printf("rank: %d before MPI_Barrier before inside warmup %d\n", rank, i);
+                    // MPI_Barrier(MPI_COMM_WORLD);
                     printf("rank: %d after MPI_Barrier before waitall inside warmup %d\n", rank, i);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
                     printf("rank: %d After Waitall warmup %d\n", rank, i);
 #endif
                 }
-                printf("rank: %d before MPI_Barrier outside warmup\n", rank);
-                MPI_Barrier(MPI_COMM_WORLD);
-                printf("rank: %d after MPI_Barrier outside warmup\n", rank);
+                // printf("rank: %d before MPI_Barrier outside warmup\n", rank);
+                // MPI_Barrier(MPI_COMM_WORLD);
+                // printf("rank: %d after MPI_Barrier outside warmup\n", rank);
 
 #if defined(USE_CALIPER)
                 CALI_MARK_END(warmup_region);
@@ -689,8 +689,8 @@ int main(int argc, char **argv)
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
                                   MPI_COMM_WORLD, &send_request[j]);
                     }
-                    printf("rank: %d before MPI_Barrier inside iteration %d\n", rank, i);
-                    MPI_Barrier(MPI_COMM_WORLD);
+                    // printf("rank: %d before MPI_Barrier inside iteration %d\n", rank, i);
+                    // MPI_Barrier(MPI_COMM_WORLD);
                     printf("rank: %d after MPI_barrier before waitall inside iteration %d\n", rank, i);
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
@@ -706,9 +706,9 @@ int main(int argc, char **argv)
                         ++iters;
                     }
                 }
-                printf("rank: %d before MPI_Barrier outside iteration loop\n", rank);
-                MPI_Barrier(MPI_COMM_WORLD);
-                printf("rank: %d after MPI_Barrier outside iteration loop\n", rank);
+                // printf("rank: %d before MPI_Barrier outside iteration loop\n", rank);
+                // MPI_Barrier(MPI_COMM_WORLD);
+                // printf("rank: %d after MPI_Barrier outside iteration loop\n", rank);
 
                 if (i_am_timing_rank)
                 {
