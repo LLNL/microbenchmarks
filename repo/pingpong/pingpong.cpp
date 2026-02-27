@@ -568,6 +568,7 @@ int main(int argc, char **argv)
 
                 std::vector<MPI_Request> send_request(WINDOW_SIZE);
                 std::vector<MPI_Request> recv_request(WINDOW_SIZE);
+                std::vector<MPI_Request> reqs(2 * WINDOW_SIZE);
 #endif
 
                 // Sync ONLY participating ranks
@@ -606,14 +607,15 @@ int main(int argc, char **argv)
 #else
                     for (int j = 0; j < WINDOW_SIZE; ++j) {
                         MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
-                                  MPI_COMM_WORLD, &recv_request[j]);
+                                  MPI_COMM_WORLD, &reqs[j]);
                     }
                     for (int j = 0; j < WINDOW_SIZE; ++j) {
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
-                                  MPI_COMM_WORLD, &send_request[j]);
+                                  MPI_COMM_WORLD, &reqs[WINDOW_SIZE + j]);
                     }
-                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
-                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    //MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    //MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall( (int)reqs.size() , reqs.data() , MPI_STATUSES_IGNORE);
 #endif
                 }
 
@@ -665,14 +667,15 @@ int main(int argc, char **argv)
 #else
                     for (int j = 0; j < WINDOW_SIZE; ++j) {
                         MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
-                                  MPI_COMM_WORLD, &recv_request[j]);
+                                  MPI_COMM_WORLD, &reqs[j]);
                     }
                     for (int j = 0; j < WINDOW_SIZE; ++j) {
                         MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
-                                  MPI_COMM_WORLD, &send_request[j]);
+                                  MPI_COMM_WORLD, &reqs[WINDOW_SIZE + j]);
                     }
-                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
-                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    //MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    //MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall( (int)reqs.size() , reqs.data() , MPI_STATUSES_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
