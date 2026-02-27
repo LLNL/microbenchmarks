@@ -115,35 +115,15 @@ build_pingpong_pairs(const std::string& region_label,
     };
 
     if (region_label == "Same Node Same Socket") {
-        int rps = sys_cores_per_socket;
-        if (rps < 2) return pairs;
-
-        int s0 = 0;
-        int s1 = rps / 8;
-        int s2 = rps / 4;
-        int s3 = (rps / 2) - 2;
-
-        add_pair(s0, s0 + 1);
-        add_pair(s1, s1 + 1);
-        add_pair(s2, s2 + 1);
-        add_pair(s3, s3 + 1);
-
+        add_pair(0, 1);
         return pairs;
     }
 
     if (region_label == "Same Node Different Socket") {
         int rps = sys_cores_per_socket;
-        int delta = rps;
+        int half = rps / 2;
 
-        int s0 = 0;
-        int s1 = delta / 8;
-        int s2 = delta / 4;
-        int s3 = (delta / 2) - 1;
-
-        add_pair(s0, rps / 2);
-        add_pair(s1, (rps / 2) + 1);
-        add_pair(s2, (rps / 2) + 2);
-        add_pair(s3, rps - 1);
+        add_pair(0, half);
 
         return pairs;
     }
