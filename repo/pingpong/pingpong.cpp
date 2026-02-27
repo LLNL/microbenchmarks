@@ -196,7 +196,7 @@ int main(int argc, char **argv)
 #endif
 
     int PING_PONG_LIMIT = 10;
-    const int WINDOW_SIZE = 1; // OSU-style window exchange; no SINGLE/MULTIPLE modes
+    const int WINDOW_SIZE = 64; // OSU-style window exchange; no SINGLE/MULTIPLE modes
     int msg_size = 1;
     int n_nodes = 1;
     int sys_cores_per_socket = 1;
@@ -518,8 +518,6 @@ int main(int argc, char **argv)
                 double total_time = 0.0;
                 int warmup = 1;
 
-                // ---- CLEAN FIX #2: per-region tags to avoid cross-region message matching ----
-                // Keep tags safely below typical MPI_TAG_UB by bounding with modulo.
                 const int base_tag = 1000 + ((partner_rank % 2000) * 10);
                 const int TAG_A = base_tag + 0;
                 const int TAG_B = base_tag + 1;
