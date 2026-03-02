@@ -175,7 +175,7 @@ int main(int argc, char **argv)
     CALI_CXX_MARK_FUNCTION;
 #endif
 
-    int PING_PONG_LIMIT = 10;
+    int num_iterations = 10;
     const int WINDOW_SIZE = 64; // OSU-style window exchange; no SINGLE/MULTIPLE modes
     int msg_size = 1;
     int n_nodes = 1;
@@ -207,7 +207,7 @@ int main(int argc, char **argv)
                 MPI_Finalize();
                 return 0;
             case 'i':
-                PING_PONG_LIMIT = atoi(optarg);
+                num_iterations = atoi(optarg);
                 break;
             case 'p':
                 // kept for compatibility; parse partners here if desired
@@ -251,7 +251,7 @@ int main(int argc, char **argv)
     if (rank == 0)
     {
         printf("Configuration:\n");
-        printf("PING_PONG_LIMIT: %d\n", PING_PONG_LIMIT);
+        printf("PING_PONG_LIMIT: %d\n", num_iterations);
         printf("Message size: %d bytes\n", msg_size);
         printf("Cores per socket: %d\n", sys_cores_per_socket);
         printf("Cores per node: %d\n", sys_cores_per_node);
@@ -274,7 +274,7 @@ int main(int argc, char **argv)
         }
         rankmap << "}";
         adiak::value("rank_node_map", rankmap.str());
-        adiak::value("iterations", PING_PONG_LIMIT);
+        adiak::value("iterations", num_iterations);
         adiak::value("pingpong_num_pairs", pingpong_num_pairs);
 #endif
     }
@@ -633,7 +633,7 @@ int main(int argc, char **argv)
 
                 MPI_Barrier(pp_comm);
 
-                for (int i = 0; i < PING_PONG_LIMIT; i++)
+                for (int i = 0; i < num_iterations; i++)
                 {
                     double start = 0.0, end = 0.0;
 
@@ -827,7 +827,7 @@ int main(int argc, char **argv)
                 double max_rtt = 0.0;
                 int iters = 0;
 
-                for (int it = 0; it < PING_PONG_LIMIT; ++it)
+                for (int it = 0; it < num_iterations; ++it)
                 {
                     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -979,7 +979,7 @@ int main(int argc, char **argv)
                 double max_rtt = 0.0;
                 int iters = 0;
 
-                for(int i = 0; i < PING_PONG_LIMIT; i++)
+                for(int i = 0; i < num_iterations; i++)
                 {
                     MPI_Barrier(MPI_COMM_WORLD);
                     double t0 = MPI_Wtime();
@@ -1122,7 +1122,7 @@ int main(int argc, char **argv)
                 double max_rtt = 0.0;
                 int iters = 0;
 
-                for(int i = 0; i < PING_PONG_LIMIT; i++)
+                for(int i = 0; i < num_iterations; i++)
                 {
                     MPI_Barrier(MPI_COMM_WORLD);
                     double t0 = MPI_Wtime();
