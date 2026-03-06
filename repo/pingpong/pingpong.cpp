@@ -415,7 +415,7 @@ int main(int argc, char **argv)
         region_names[1] = "Same Node Same Socket";
     }
 
-    for (int message = msg_size; message <= pow(msg_size, 6); message *= 8)
+    for (int message = msg_size; message <= pow(msg_size, 1); message *= 8)
     {
 #if defined(USE_CALIPER)
         std::string profile = "spot(output=" + std::to_string(message) + "_" +
