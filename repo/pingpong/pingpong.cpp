@@ -156,19 +156,19 @@ build_pingpong_pairs(const std::string& region_label,
 
     if (nodes_in_comm >= 2) {
         int rpn   = sys_cores_per_node;
-        int delta = (nodes_in_comm / 2) * rpn;
+        int last_node_base = (nodes_in_comm - 1) * rpn;
 
-        int srcs[4] = { 0, rpn / 4, rpn / 2, rpn - 1 };
+        int offsets[4] = {
+            0,
+            (rpn - 1) / 4,
+            (rpn - 1) / 2,
+            rpn - 1
+        };
 
-        for (int s : srcs)
-            add_pair(s, s + delta);
-    }
+        for (int off : offsets)
+            add_pair(off, last_node_base + off);
 
-    if (max_pairs > 0 && (int)pairs.size() > max_pairs){
-        pairs.resize(max_pairs);
-    }
-
-    return pairs;
+        return pairs;
 }
 
 int main(int argc, char **argv)
