@@ -169,6 +169,7 @@ build_pingpong_pairs(const std::string& region_label,
             add_pair(off, last_node_base + off);
 
         return pairs;
+    }
 }
 
 int main(int argc, char **argv)
