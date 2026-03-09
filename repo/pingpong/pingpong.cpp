@@ -247,7 +247,7 @@ int main(int argc, char **argv)
                 metadata = optarg;
                 break;
             case 'k':
-                pingpong_num_pairs = optarg;
+                pingpong_num_pairs = atoi(optarg);
                 break;
             case 'O':
             {
