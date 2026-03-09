@@ -115,15 +115,35 @@ build_pingpong_pairs(const std::string& region_label,
     };
 
     if (region_label == "Same Node Same Socket") {
-        add_pair(0, 1);
+        int rps = sys_cores_per_socket;
+        if (rps < 2) return pairs;
+
+        int s0 = 0;
+        int s1 = rps / 8;
+        int s2 = rps / 4;
+        int s3 = (rps / 2) - 2;
+
+        add_pair(s0, s0 + 1);
+        add_pair(s1, s1 + 1);
+        add_pair(s2, s2 + 1);
+        add_pair(s3, s3 + 1);
+
         return pairs;
     }
 
     if (region_label == "Same Node Different Socket") {
         int rps = sys_cores_per_socket;
-        int half = rps / 2;
+        int delta = rps;
 
-        add_pair(0, half);
+        int s0 = 0;
+        int s1 = delta / 8;
+        int s2 = delta / 4;
+        int s3 = (delta / 2) - 1;
+
+        add_pair(s0, rps / 2);
+        add_pair(s1, (rps / 2) + 1);
+        add_pair(s2, (rps / 2) + 2);
+        add_pair(s3, rps - 1);
 
         return pairs;
     }
@@ -131,14 +151,13 @@ build_pingpong_pairs(const std::string& region_label,
     int nodes_in_comm = 0;
     {
         std::stringstream ss(region_label);
-        ss >> nodes_in_comm; // stops at "nodes"
+        ss >> nodes_in_comm;
     }
 
     if (nodes_in_comm >= 2) {
         int rpn   = sys_cores_per_node;
         int delta = (nodes_in_comm / 2) * rpn;
 
-        // We spread srcs across the first node:
         int srcs[4] = { 0, rpn / 4, rpn / 2, rpn - 1 };
 
         for (int s : srcs)
@@ -194,11 +213,11 @@ int main(int argc, char **argv)
     int opt;
     const char *usage =
         "Usage: %s [-h] [-i n-iterations] [-p rank1,rank2] [-m msg_sz] "
-        "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] [-b metadata] "
+        "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] [-b metadata] [-k pingpong_num_pairs]"
         "[-O pingpong|alltoall|reduce|allreduce|all]\n"
         "Default: -O pingpong\n";
 
-    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:O:")) != -1)
+    while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:k:O:")) != -1)
     {
         switch (opt)
         {
@@ -226,6 +245,9 @@ int main(int argc, char **argv)
                 break;
             case 'b':
                 metadata = optarg;
+                break;
+            case 'k':
+                pingpong_num_pairs = optarg;
                 break;
             case 'O':
             {
@@ -257,6 +279,7 @@ int main(int argc, char **argv)
         printf("Cores per node: %d\n", sys_cores_per_node);
         printf("Nodes: %d\n", n_nodes);
         printf("World size: %d\n", size);
+        printf("Pingpong num pairs: %d\n", pingpong_num_pairs);
         printf("Mode (-O): %s\n",
                op == OpKind::PingPong ? "pingpong" :
                op == OpKind::Alltoall ? "alltoall" :
@@ -675,7 +698,6 @@ int main(int argc, char **argv)
                     }
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
-                    //MPI_Waitall( (int)reqs.size() , reqs.data() , MPI_STATUSES_IGNORE);
 #endif
 
                     if (i_am_timing_rank) {
