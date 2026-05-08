@@ -908,6 +908,7 @@ int main(int argc, char **argv)
                 free(aa_send);
                 free(aa_recv);
 #endif
+                sleep(1);
             }
         }
 
