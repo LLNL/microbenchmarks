@@ -847,7 +847,7 @@ int main(int argc, char **argv)
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-                fprintf("end warmup, begin timing");
+                printf("end warmup, begin timing");
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
@@ -895,7 +895,7 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
-                fprintf("end timing");
+                printf("end timing");
 
 #if defined(USE_HIP)
                 free(aa_send_host);
@@ -911,7 +911,7 @@ int main(int argc, char **argv)
                 free(aa_send);
                 free(aa_recv);
 #endif
-                fprintf("freed memory");
+                printf("freed memory");
             }
         }
 
