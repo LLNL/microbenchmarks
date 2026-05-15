@@ -823,7 +823,7 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region_aa);
 #endif
-                fprintf("begin warmup");
+                printf("begin warmup");
 
                 for (int i = 0; i < warmup; i++)
                 {
