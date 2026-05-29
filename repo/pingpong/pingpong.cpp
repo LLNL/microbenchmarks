@@ -891,7 +891,7 @@ int main(int argc, char **argv)
                         cali_set_double(aa_avg_time_sec_attr, avg_rtt);
                         cali_set_double(aa_max_time_sec_attr, max_rtt);
                         cali_set_double(aa_min_time_sec_attr, min_rtt);
-                        printf("finished iteration: &d\n" &it);
+                        printf("finished iteration: %d\n" &it);
                         fflush(stdout);
 #endif
                     }
