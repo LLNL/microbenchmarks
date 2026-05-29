@@ -899,7 +899,7 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
-                printf("rank &d: end timing\n");
+                printf("rank %d: end timing\n", rank);
                 fflush(stdout);
 
 #if defined(USE_HIP)
