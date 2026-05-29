@@ -823,7 +823,8 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region_aa);
 #endif
-                printf("begin warmup");
+                printf("rank %d: begin warmup\n", rank);
+                fflush(stdout);
 
                 for (int i = 0; i < warmup; i++)
                 {
@@ -847,7 +848,8 @@ int main(int argc, char **argv)
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
 
-                printf("end warmup, begin timing");
+                printf("rank %d: end warmup, begin timing\n", rank);
+                fflush(stdout);
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
@@ -889,13 +891,16 @@ int main(int argc, char **argv)
                         cali_set_double(aa_avg_time_sec_attr, avg_rtt);
                         cali_set_double(aa_max_time_sec_attr, max_rtt);
                         cali_set_double(aa_min_time_sec_attr, min_rtt);
+                        printf("finished iteration: &d\n" &it);
+                        fflush(stdout);
 #endif
                     }
                 }
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
-                printf("end timing");
+                printf("rank &d: end timing\n");
+                fflush(stdout);
 
 #if defined(USE_HIP)
                 free(aa_send_host);
@@ -911,7 +916,8 @@ int main(int argc, char **argv)
                 free(aa_send);
                 free(aa_recv);
 #endif
-                printf("freed memory");
+                printf("freed memory\n");
+                fflush(stdout);
             }
         }
 
