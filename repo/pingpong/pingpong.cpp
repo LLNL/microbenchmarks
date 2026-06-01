@@ -881,7 +881,7 @@ int main(int argc, char **argv)
                     double dt = t1 - t0;
 
                     double iter_max = 0.0;
-                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD); //timing for the longest rank because collective operation not finished until every rank finishes
                     if (rank == 0)
                     {
                         alltoall_total_time += iter_max;
