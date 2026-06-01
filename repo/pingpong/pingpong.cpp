@@ -55,7 +55,7 @@ const char *get_hostname_for_rank(int rank, char all_hostnames[][1024], int size
         return "INVALID_RANK";
 }
 
-int extract_node_number(const char *hostname)
+int extract_node_number(const char *hostname)       //helper function to build region labels
 {
     int len = (int)strlen(hostname);
     int num = 0;
@@ -99,6 +99,7 @@ struct RankPair {
     int dst;
 };
 
+//building region labels specifically for 1 node (same socket and different socket)
 static std::vector<RankPair>
 build_pingpong_pairs(const std::string& region_label,
                      int size,
@@ -274,13 +275,13 @@ int main(int argc, char **argv)
     if (rank == 0)
     {
         printf("Configuration:\n");
-        printf("PING_PONG_LIMIT: %d\n", num_iterations);
+        printf("Number iterations: %d\n", num_iterations);            //renamed for easier understanding
         printf("Message size: %d bytes\n", msg_size);
         printf("Cores per socket: %d\n", sys_cores_per_socket);
         printf("Cores per node: %d\n", sys_cores_per_node);
         printf("Nodes: %d\n", n_nodes);
         printf("World size: %d\n", size);
-        printf("Pingpong num pairs: %d\n", pingpong_num_pairs);
+        printf("Pingpong num pairs: %d\n", pingpong_num_pairs);       //only for Pingpong
         printf("Mode (-O): %s\n",
                op == OpKind::PingPong ? "pingpong" :
                op == OpKind::Alltoall ? "alltoall" :
@@ -414,7 +415,7 @@ int main(int argc, char **argv)
     int current_nodes = n_nodes;
     int current_p = P;
 
-    while (current_p > 2)
+    while (current_p > 2)                               //splitting for region labels for pingpong
     {
         int partner_rank = current_p - 1;
         std::string label;
@@ -487,13 +488,13 @@ int main(int argc, char **argv)
 
                 int partner = my_partner[rank];
 
-                // ---- CLEAN FIX #1: split communicator so only paired ranks participate ----
+                //split communicator so only paired ranks participate
                 const int active = (partner != MPI_PROC_NULL);
                 MPI_Comm pp_comm = MPI_COMM_NULL;
                 MPI_Comm_split(MPI_COMM_WORLD, active ? 0 : MPI_UNDEFINED, rank, &pp_comm);
 
                 if (!active) {
-                    // Not in any pair for this region: do NOT touch barriers inside this region
+                    //Not in any pair for this region: do NOT touch barriers inside this region
                     continue;
                 }
 
@@ -639,7 +640,6 @@ int main(int argc, char **argv)
                     }
                     MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
-                    //MPI_Waitall( (int)reqs.size() , reqs.data() , MPI_STATUSES_IGNORE);
 #endif
                 }
 
@@ -770,6 +770,7 @@ int main(int argc, char **argv)
                 int warmup = 1;
                 double alltoall_total_time = 0.0;
 
+                // --- buffer allocation ---
 #if defined(USE_HIP)
                 char *aa_send_dev;
                 char *aa_recv_dev;
@@ -820,6 +821,7 @@ int main(int argc, char **argv)
                 memset(aa_recv,  0, aa_total_bytes);
 #endif
 
+                // --- begin warmup ---
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region_aa);
 #endif
@@ -854,6 +856,7 @@ int main(int argc, char **argv)
                 double max_rtt = 0.0;
                 int iters = 0;
 
+                // --- timed alltoall ---
                 for (int it = 0; it < num_iterations; ++it)
                 {
                     MPI_Barrier(MPI_COMM_WORLD);
@@ -881,7 +884,7 @@ int main(int argc, char **argv)
                     if (rank == 0)
                     {
                         alltoall_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;
+                        if(dt < min_rtt) min_rtt = dt;      //min & max not computing correctly on rank 0
                         if(dt > max_rtt) max_rtt = dt;
                         ++iters;
 
@@ -902,6 +905,7 @@ int main(int argc, char **argv)
                 printf("rank %d: end timing\n", rank);
                 fflush(stdout);
 
+                // --- freeing up memory ---
 #if defined(USE_HIP)
                 free(aa_send_host);
                 free(aa_recv_host);
@@ -939,6 +943,7 @@ int main(int argc, char **argv)
                 int warmup = 1;
                 double red_total_time = 0.0;
 
+                // --- buffer allocation ---
 #if defined(USE_CUDA)
                 char *rd_d_send=nullptr;
                 char *rd_d_recv=nullptr;
@@ -985,9 +990,13 @@ int main(int argc, char **argv)
                 memset(rd_recv, 0,   red_count);
 #endif
 
+                // --- warmup section ---
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region_red);
 #endif
+                printf("rank %d: begin warmup\n", rank);
+                fflush(stdout);
+
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_CUDA)
@@ -1007,11 +1016,14 @@ int main(int argc, char **argv)
                 CALI_MARK_END(warmup_region_red);
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
+                printf("rank %d: end warmup, begin timing\n", rank);
+                fflush(stdout);
 
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
 
+                // --- timed reduce ---
                 for(int i = 0; i < num_iterations; i++)
                 {
                     MPI_Barrier(MPI_COMM_WORLD);
@@ -1034,7 +1046,7 @@ int main(int argc, char **argv)
                     if(rank == 0)
                     {
                         red_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;
+                        if(dt < min_rtt) min_rtt = dt;      //fix min and max calculation
                         if(dt > max_rtt) max_rtt = dt;
                         ++iters;
 
@@ -1044,12 +1056,16 @@ int main(int argc, char **argv)
                         cali_set_double(red_avg_time_sec_attr, avg_rtt);
                         cali_set_double(red_max_time_sec_attr, max_rtt);
                         cali_set_double(red_min_time_sec_attr, min_rtt);
+                        printf("finished iteration: %d\n", i);
+                        fflush(stdout);
 #endif
                     }
                 }
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
+                printf("rank %d: end timing\n", rank);
+                fflush(stdout);
 
 #if defined(USE_HIP)
                 free(rd_h_send);
@@ -1065,6 +1081,8 @@ int main(int argc, char **argv)
                 free(rd_send);
                 free(rd_recv);
 #endif
+                printf("freed memory\n");
+                fflush(stdout);
             }
         }
 
@@ -1133,6 +1151,9 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
                 CALI_MARK_BEGIN(warmup_region_ar);
 #endif
+                printf("rank %d: begin warmup\n", rank);
+                fflush(stdout);
+
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_CUDA)
@@ -1151,6 +1172,9 @@ int main(int argc, char **argv)
                 CALI_MARK_END(warmup_region_ar);
                 CALI_MARK_BEGIN(region_label.c_str());
 #endif
+                printf("rank %d: end warmup, begin timing\n", rank);
+                fflush(stdout);
+
                 double min_rtt = std::numeric_limits<double>::infinity();
                 double max_rtt = 0.0;
                 int iters = 0;
@@ -1177,7 +1201,7 @@ int main(int argc, char **argv)
                     if(rank == 0)
                     {
                         ar_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;
+                        if(dt < min_rtt) min_rtt = dt;          //fix min and max calculation
                         if(dt > max_rtt) max_rtt = dt;
                         ++iters;
 
@@ -1187,12 +1211,16 @@ int main(int argc, char **argv)
                         cali_set_double(ar_avg_time_sec_attr, avg_rtt);
                         cali_set_double(ar_max_time_sec_attr, max_rtt);
                         cali_set_double(ar_min_time_sec_attr, min_rtt);
+                        printf("finished iteration: %d\n", i);
+                        fflush(stdout);
 #endif
                     }
                 }
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
 #endif
+                printf("rank %d: end timing\n", rank);
+                fflush(stdout);
 
 #if defined(USE_HIP)
                 free(ar_h_send);
@@ -1208,6 +1236,8 @@ int main(int argc, char **argv)
                 free(ar_send);
                 free(ar_recv);
 #endif
+                printf("freed memory\n");
+                fflush(stdout);
             }
         }
 
