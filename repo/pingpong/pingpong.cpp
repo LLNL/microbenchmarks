@@ -701,6 +701,7 @@ int main(int argc, char **argv)
                     MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #endif
 
+                    // calculation for round-trip time
                     if (i_am_timing_rank) {
                         end = MPI_Wtime();
                         double rtt = end - start;
