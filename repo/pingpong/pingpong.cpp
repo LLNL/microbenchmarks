@@ -885,8 +885,8 @@ int main(int argc, char **argv)
                     if (rank == 0)
                     {
                         alltoall_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;      //min & max not computing correctly on rank 0
-                        if(dt > max_rtt) max_rtt = dt;
+                        if(iter_max < min_rtt) min_rtt = iter_max;      //min & max not computing correctly on rank 0
+                        if(iter_max > max_rtt) max_rtt = iter_max;
                         ++iters;
 
                         double avg_rtt = (iters > 0) ? (alltoall_total_time / iters) : 0.0;
@@ -1047,8 +1047,8 @@ int main(int argc, char **argv)
                     if(rank == 0)
                     {
                         red_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;      //fix min and max calculation
-                        if(dt > max_rtt) max_rtt = dt;
+                        if(iter_max < min_rtt) min_rtt = iter_max;      //fix min and max calculation
+                        if(iter_max > max_rtt) max_rtt = iter_max;
                         ++iters;
 
                         double avg_rtt = (iters > 0) ? (red_total_time / iters) : 0.0;
@@ -1202,8 +1202,8 @@ int main(int argc, char **argv)
                     if(rank == 0)
                     {
                         ar_total_time += iter_max;
-                        if(dt < min_rtt) min_rtt = dt;          //fix min and max calculation
-                        if(dt > max_rtt) max_rtt = dt;
+                        if(iter_max < min_rtt) min_rtt = iter_max;          //fix min and max calculation
+                        if(iter_max > max_rtt) max_rtt = iter_max;
                         ++iters;
 
                         double avg_rtt = (iters > 0) ? (ar_total_time / iters) : 0.0;
