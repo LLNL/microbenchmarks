@@ -190,9 +190,9 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
     std::vector<std::string> all_comm_pairs;
     static std::map<int, cali::ConfigManager> mgr;
-    MPI_Comm adiak_comm = MPI_COMM_WORLD;
-    adiak::init(&adiak_comm);
-    adiak::collect_all();
+    //MPI_Comm adiak_comm = MPI_COMM_WORLD;
+    //adiak::init(&adiak_comm);
+    //adiak::collect_all();
     CALI_CXX_MARK_FUNCTION;
 #endif
 
@@ -298,9 +298,9 @@ int main(int argc, char **argv)
                 rankmap << ", ";
         }
         rankmap << "}";
-        adiak::value("rank_node_map", rankmap.str());
-        adiak::value("iterations", num_iterations);
-        adiak::value("pingpong_num_pairs", pingpong_num_pairs);
+        //adiak::value("rank_node_map", rankmap.str());
+        //adiak::value("iterations", num_iterations);
+        //adiak::value("pingpong_num_pairs", pingpong_num_pairs);
 #endif
     }
 
@@ -452,7 +452,7 @@ int main(int argc, char **argv)
 
         mgr[message].add_option_spec(src_dest_attributes);
         mgr[message].set_default_parameter("pingpong_attributes", "true");
-        adiak::value("message_size", message);
+        //adiak::value("message_size", message);
         mgr[message].add(profile.c_str());
         mgr[message].start();
 #endif
@@ -1250,7 +1250,7 @@ int main(int argc, char **argv)
 #if defined(USE_CALIPER)
     if (rank == 0 && !all_comm_pairs.empty())
     {
-        adiak::value("all_comm_pairs", all_comm_pairs);
+        //adiak::value("all_comm_pairs", all_comm_pairs);
     }
     for (auto &m : mgr)
     {
