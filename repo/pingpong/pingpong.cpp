@@ -1121,6 +1121,23 @@ int main(int argc, char **argv)
             {
                 std::string region_label = region_names[partner_rank];
 
+                int ranks_in_region = partner_rank + 1;
+                int active = (rank < ranks_in_region);
+
+                MPI_Comm region_comm = MPI_COMM_NULL;
+                MPI_Comm_split(MPI_COMM_WORLD, active ? 0 : MPI_UNDEFINED, rank, &region_comm);     //making subcommunicators
+
+                if (!active)
+                {
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    continue;
+                }
+
+                int region_rank = 0;
+                int region_size = 0;
+                MPI_Comm_rank(region_comm, &region_rank);
+                MPI_Comm_size(region_comm, &region_size);
+
                 size_t ar_count = static_cast<size_t>(message);
                 if (ar_count > INT_MAX) {
                     if (rank == 0) fprintf(stderr, "Allreduce count too large\n");
@@ -1128,6 +1145,11 @@ int main(int argc, char **argv)
                 }
                 int warmup = 1;
                 double ar_total_time = 0.0;
+
+                if (region_rank == 0) {
+                    printf("\n--- Testing %s (ALLREDUCE) with %d ranks ---\n", region_label.c_str(), region_size);
+                    fflush(stdout);
+                }
 
 #if defined(USE_CUDA)
                 char *ar_d_send=nullptr;
@@ -1184,14 +1206,14 @@ int main(int argc, char **argv)
                 {
 #if defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
                     hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
 #else
-                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
 #endif
                 }
 #if defined(USE_CALIPER)
@@ -1207,22 +1229,22 @@ int main(int argc, char **argv)
 
                 for(int i = 0; i < num_iterations; i++)
                 {
-                    MPI_Barrier(MPI_COMM_WORLD);
+                    MPI_Barrier(region_comm);
                     double t0 = MPI_Wtime();
 #if defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
                     hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
 #else
-                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
 #endif
                     double dt = MPI_Wtime() - t0;
                     double iter_max = 0.0;
-                    MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+                    MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, region_comm);
 
                     if(rank == 0)
                     {
@@ -1264,6 +1286,9 @@ int main(int argc, char **argv)
 #endif
                 printf("freed memory\n");
                 fflush(stdout);
+
+                MPI_Comm_free(&region_comm);
+                MPI_Barrier(MPI_COMM_WORLD);
             }
         }
 
