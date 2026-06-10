@@ -765,11 +765,34 @@ int main(int argc, char **argv)
             {
                 std::string region_label = region_names[partner_rank];
 
+                int ranks_in_region = partner_rank + 1;
+                int active = (rank < ranks_in_region);
+
+                MPI_Comm region_comm = MPI_COMM_NULL;
+                MPI_Comm_split(MPI_COMM_WORLD, active ? 0 : MPI_UNDEFINED, rank, &region_comm);
+
+                if (!active)
+                {
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    continue;
+                }
+
+                int region_rank = 0;
+                int region_size = 0;
+                MPI_Comm_rank(region_comm, &region_rank);
+                MPI_Comm_size(region_comm, &region_size);
+
                 size_t aa_bytes_per_rank = static_cast<size_t>(message);
-                size_t aa_total_bytes = aa_bytes_per_rank * static_cast<size_t>(size);
+                size_t aa_total_bytes = aa_bytes_per_rank * static_cast<size_t>(region_size);
 
                 int warmup = 1;
                 double alltoall_total_time = 0.0;
+
+                if (region_rank == 0) {
+                    printf("\n--- Testing %s (ALLTOALL) with %d ranks ---\n", region_label.c_str(), region_size);
+                    printf("message=%d bytes, total buffer per rank=%zu bytes\n", message, aa_total_bytes);
+                    fflush(stdout);
+                }
 
                 // --- buffer allocation ---
 #if defined(USE_HIP)
@@ -834,15 +857,15 @@ int main(int argc, char **argv)
 #if defined(USE_HIP)
                     hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
                     hipDeviceSynchronize();
-                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
                     hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
                     hipDeviceSynchronize();
 #elif defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
-                    MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
                     cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
 #else
-                    MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
 #endif
                 }
 
@@ -860,29 +883,29 @@ int main(int argc, char **argv)
                 // --- timed alltoall ---
                 for (int it = 0; it < num_iterations; ++it)
                 {
-                    MPI_Barrier(MPI_COMM_WORLD);
+                    MPI_Barrier(region_comm);
 
                     double t0 = MPI_Wtime();
 
 #if defined(USE_HIP)
                     hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
-                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
                     hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
                     hipDeviceSynchronize();
 #elif defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
-                    MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
                     cuda_check(cudaMemcpy(ad_recv, ah_recv, aa_total_bytes, cudaMemcpyHostToDevice));
 #else
-                    MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, MPI_COMM_WORLD);
+                    MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
 #endif
 
                     double t1 = MPI_Wtime();
                     double dt = t1 - t0;
 
                     double iter_max = 0.0;
-                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD); //timing for the longest rank because collective operation not finished until every rank finishes
-                    if (rank == 0)
+                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, region_comm); //timing for the longest rank because collective operation not finished until every rank finishes
+                    if (region_rank == 0)
                     {
                         alltoall_total_time += iter_max;
                         if(iter_max < min_rtt) min_rtt = iter_max;      //min & max not computing correctly on rank 0
@@ -923,6 +946,8 @@ int main(int argc, char **argv)
 #endif
                 printf("freed memory\n");
                 fflush(stdout);
+                MPI_Comm_free(&region_comm);        //free subcommunicator
+                MPI_Barrier(MPI_COMM_WORLD);
             }
         }
 
