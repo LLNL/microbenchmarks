@@ -881,14 +881,15 @@ int main(int argc, char **argv)
                 int iters = 0;
 
                 // --- timed alltoall ---
+                MPI_Barrier(region_comm);
+
+                double t0 = MPI_Wtime();
+
                 for (int it = 0; it < num_iterations; ++it)
                 {
-                    MPI_Barrier(region_comm);
-
-                    double t0 = MPI_Wtime();
-
 #if defined(USE_HIP)
                     hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
+                    hipDeviceSynchronize();
                     MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
                     hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
                     hipDeviceSynchronize();
@@ -899,29 +900,26 @@ int main(int argc, char **argv)
 #else
                     MPI_Alltoall(aa_send, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
 #endif
+                }
 
-                    double t1 = MPI_Wtime();
-                    double dt = t1 - t0;
+                double local_total_time = MPI_Wtime() - t0;
 
-                    double iter_max = 0.0;
-                    MPI_Reduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, 0, region_comm); //timing for the longest rank because collective operation not finished until every rank finishes
-                    if (region_rank == 0)
-                    {
-                        alltoall_total_time += iter_max;
-                        if(iter_max < min_rtt) min_rtt = iter_max;      //min & max not computing correctly on rank 0
-                        if(iter_max > max_rtt) max_rtt = iter_max;
-                        ++iters;
+                double max_total_time = 0.0;
+                MPI_Reduce(&local_total_time, &max_total_time, 1, MPI_DOUBLE, MPI_MAX, 0, region_comm);
 
-                        double avg_rtt = (iters > 0) ? (alltoall_total_time / iters) : 0.0;
+                if (region_rank == 0)
+                {
+                    double avg_time = max_total_time / num_iterations;
+
 #if defined(USE_CALIPER)
-                        cali_set_string(comm_phase_attr, "alltoall");
-                        cali_set_double(aa_avg_time_sec_attr, avg_rtt);
-                        cali_set_double(aa_max_time_sec_attr, max_rtt);
-                        cali_set_double(aa_min_time_sec_attr, min_rtt);
-                        printf("finished iteration: %d\n", it);
-                        fflush(stdout);
+                    cali_set_string(comm_phase_attr, "alltoall");
+                    cali_set_double(aa_avg_time_sec_attr, avg_time);
+                    cali_set_double(aa_max_time_sec_attr, max_total_time);      //max total time for # iterations
+                    //cali_set_double(aa_min_time_sec_attr, avg_time);
 #endif
-                    }
+                    printf("ALLTOALL %s: total=%g s, avg_per_iter=%g s over %d iterations\n",
+                        region_label.c_str(), max_total_time, avg_time, num_iterations);
+                    fflush(stdout);
                 }
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
@@ -1227,10 +1225,13 @@ int main(int argc, char **argv)
                 double max_rtt = 0.0;
                 int iters = 0;
 
-                for(int i = 0; i < num_iterations; i++)
+                // --- timed allreduce: back-to-back MPI calls ---
+                MPI_Barrier(region_comm);
+
+                double t0 = MPI_Wtime();
+
+                for (int it = 0; it < num_iterations; ++it)
                 {
-                    MPI_Barrier(region_comm);
-                    double t0 = MPI_Wtime();
 #if defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ar_h_send, ar_d_send, ar_count, cudaMemcpyDeviceToHost));
                     MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
@@ -1240,29 +1241,26 @@ int main(int argc, char **argv)
                     MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
 #else
-                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
+                    MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM,region_comm);
 #endif
-                    double dt = MPI_Wtime() - t0;
-                    double iter_max = 0.0;
-                    MPI_Allreduce(&dt, &iter_max, 1, MPI_DOUBLE, MPI_MAX, region_comm);
+                }
 
-                    if(region_rank == 0)
-                    {
-                        ar_total_time += iter_max;
-                        if(iter_max < min_rtt) min_rtt = iter_max;          //fix min and max calculation
-                        if(iter_max > max_rtt) max_rtt = iter_max;
-                        ++iters;
+                double local_total_time = MPI_Wtime() - t0;
+                double max_total_time = 0.0;
+                MPI_Allreduce(&local_total_time, &max_total_time, 1, MPI_DOUBLE, MPI_MAX, region_comm);
 
-                        double avg_rtt = (iters > 0) ? (ar_total_time / iters) : 0.0;
+                if (region_rank == 0)
+                {
+                    double avg_time = max_total_time / num_iterations;
 #if defined(USE_CALIPER)
-                        cali_set_string(comm_phase_attr, "allreduce");
-                        cali_set_double(ar_avg_time_sec_attr, avg_rtt);
-                        cali_set_double(ar_max_time_sec_attr, max_rtt);
-                        cali_set_double(ar_min_time_sec_attr, min_rtt);
-                        printf("finished iteration: %d\n", i);
-                        fflush(stdout);
+                    cali_set_string(comm_phase_attr, "allreduce");
+                    cali_set_double(ar_avg_time_sec_attr, avg_time);
+                    cali_set_double(ar_max_time_sec_attr, max_total_time);      //max total time for # iterations
+                    //cali_set_double(ar_min_time_sec_attr, avg_time);
 #endif
-                    }
+                    printf("ALLREDUCE %s: total=%g s, avg_per_iter=%g s over %d iterations\n",
+                        region_label.c_str(), max_total_time, avg_time, num_iterations);
+                    fflush(stdout);
                 }
 #if defined(USE_CALIPER)
                 CALI_MARK_END(region_label.c_str());
