@@ -533,29 +533,45 @@ int main(int argc, char **argv)
 
                 // ---------- buffer allocation ----------
 #if defined(USE_HIP)
-                char *send_buf;
-                char *recv_buf;
+                char *send_flat = nullptr;
+                char *recv_flat = nullptr;
 
-                hipError_t err1 = hipMalloc((void**)&send_buf, message);
-                hipError_t err2 = hipMalloc((void**)&recv_buf, message);
+                size_t pp_total_bytes = (size_t)WINDOW_SIZE * (size_t)message;
+
+                hipError_t err1 = hipMalloc((void**)&send_flat, pp_total_bytes);
+                hipError_t err2 = hipMalloc((void**)&recv_flat, pp_total_bytes);
 
                 if (err1 != hipSuccess || err2 != hipSuccess) {
-                    fprintf(stderr, "HIP malloc failed: %s %s\n",
-                            hipGetErrorString(err1),
-                            hipGetErrorString(err2));
+                    fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(err1), hipGetErrorString(err2));
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
 
-                {
-                    char* h_rand = (char*)malloc(message);
-                    fill_with_random_pattern(h_rand, (size_t)message);
-                    hipError_t cuerr1 =
-                        hipMemcpy(send_buf, h_rand, message, hipMemcpyHostToDevice);
-                    assert(cuerr1 == hipSuccess);
-                    free(h_rand);
+                char *h_tmp = (char*)malloc(pp_total_bytes);
+                if (!h_tmp) {
+                    fprintf(stderr, "Rank %d host malloc failed for %zu bytes\n", rank, pp_total_bytes);
+                    MPI_Abort(MPI_COMM_WORLD, 1);
                 }
-                hipError_t cuerr2 = hipMemset(recv_buf, 0, message);
+
+                fill_with_random_pattern(h_tmp, pp_total_bytes);
+
+                hipError_t cuerr1 = hipMemcpy(send_flat, h_tmp, pp_total_bytes, hipMemcpyHostToDevice);
+                assert(cuerr1 == hipSuccess);
+
+                hipError_t cuerr2 = hipMemset(recv_flat, 0, pp_total_bytes);
                 assert(cuerr2 == hipSuccess);
+
+                free(h_tmp);
+
+                std::vector<char*> s_buf(WINDOW_SIZE);
+                std::vector<char*> r_buf(WINDOW_SIZE);
+
+                for (int j = 0; j < WINDOW_SIZE; ++j) {
+                    s_buf[j] = send_flat + (size_t)j * (size_t)message;
+                    r_buf[j] = recv_flat + (size_t)j * (size_t)message;
+                }
+
+                std::vector<MPI_Request> send_request(WINDOW_SIZE);
+                std::vector<MPI_Request> recv_request(WINDOW_SIZE);
 
 #elif defined(USE_CUDA)
                 int dev_count = 0;
@@ -606,15 +622,16 @@ int main(int argc, char **argv)
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
-                    if (rank < partner) {
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, TAG_A, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, TAG_A, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
-                    } else {
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, TAG_A, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, TAG_A, MPI_COMM_WORLD);
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
+                                MPI_COMM_WORLD, &recv_request[j]);
                     }
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
+                                MPI_COMM_WORLD, &send_request[j]);
+                    }
+                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #elif defined(USE_CUDA)
                     if (rank < partner) {
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
@@ -665,15 +682,16 @@ int main(int argc, char **argv)
                         start = MPI_Wtime();
 
 #if defined(USE_HIP)
-                    if (rank < partner) {
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, TAG_B, MPI_COMM_WORLD);
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, TAG_B, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
-                    } else {
-                        MPI_Recv(recv_buf, message, MPI_CHAR, partner, TAG_B, MPI_COMM_WORLD,
-                                 MPI_STATUS_IGNORE);
-                        MPI_Send(send_buf, message, MPI_CHAR, partner, TAG_B, MPI_COMM_WORLD);
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Irecv(r_buf[j], message, MPI_CHAR, partner, my_recv_tag,
+                                MPI_COMM_WORLD, &recv_request[j]);
                     }
+                    for (int j = 0; j < WINDOW_SIZE; ++j) {
+                        MPI_Isend(s_buf[j], message, MPI_CHAR, partner, my_send_tag,
+                                MPI_COMM_WORLD, &send_request[j]);
+                    }
+                    MPI_Waitall(WINDOW_SIZE, send_request.data(), MPI_STATUSES_IGNORE);
+                    MPI_Waitall(WINDOW_SIZE, recv_request.data(), MPI_STATUSES_IGNORE);
 #elif defined(USE_CUDA)
                     if (rank < partner) {
                         cuda_check(cudaMemcpy(h_send, d_send, message, cudaMemcpyDeviceToHost));
@@ -737,8 +755,8 @@ int main(int argc, char **argv)
 
                 // ---------- cleanup ----------
 #if defined(USE_HIP)
-                hipFree(send_buf);
-                hipFree(recv_buf);
+                hipFree(send_flat);
+                hipFree(recv_flat);
 #elif defined(USE_CUDA)
                 cuda_check(cudaFreeHost(h_send));
                 cuda_check(cudaFreeHost(h_recv));
@@ -855,11 +873,12 @@ int main(int argc, char **argv)
                 for (int i = 0; i < warmup; i++)
                 {
 #if defined(USE_HIP)
-                    hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
-                    hipDeviceSynchronize();
-                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
-                    hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
-                    hipDeviceSynchronize();
+                    // hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
+                    // hipDeviceSynchronize();
+                    // MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
+                    // hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
+                    // hipDeviceSynchronize();
+                    MPI_Alltoall(aa_send_dev, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_dev, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
 #elif defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
                     MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
@@ -888,11 +907,12 @@ int main(int argc, char **argv)
                 for (int it = 0; it < num_iterations; ++it)
                 {
 #if defined(USE_HIP)
-                    hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
-                    hipDeviceSynchronize();
-                    MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
-                    hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
-                    hipDeviceSynchronize();
+                    // hipMemcpy(aa_send_host, aa_send_dev, aa_total_bytes, hipMemcpyDeviceToHost);
+                    // hipDeviceSynchronize();
+                    // MPI_Alltoall(aa_send_host, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_host, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
+                    // hipMemcpy(aa_recv_dev, aa_recv_host, aa_total_bytes, hipMemcpyHostToDevice);
+                    // hipDeviceSynchronize();
+                    MPI_Alltoall(aa_send_dev, (int)aa_bytes_per_rank, MPI_CHAR, aa_recv_dev, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
 #elif defined(USE_CUDA)
                     cuda_check(cudaMemcpy(ah_send, ad_send, aa_total_bytes, cudaMemcpyDeviceToHost));
                     MPI_Alltoall(ah_send, (int)aa_bytes_per_rank, MPI_CHAR, ah_recv, (int)aa_bytes_per_rank, MPI_CHAR, region_comm);
@@ -1028,9 +1048,10 @@ int main(int argc, char **argv)
                     MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
                     cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
-                    MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
-                    hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+                    // hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
+                    // MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                    // hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+                    MPI_Reduce(rd_d_send, rd_d_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
 #else
                     MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
 #endif
@@ -1057,9 +1078,10 @@ int main(int argc, char **argv)
                     MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
                     cuda_check(cudaMemcpy(rd_d_recv, rd_h_recv, red_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
-                    MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
-                    hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+                    // hipMemcpy(rd_h_send, rd_d_send, red_count, hipMemcpyDeviceToHost);
+                    // MPI_Reduce(rd_h_send, rd_h_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
+                    // hipMemcpy(rd_d_recv, rd_h_recv, red_count, hipMemcpyHostToDevice);
+                    MPI_Reduce(rd_d_send, rd_d_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
 #else
                     MPI_Reduce(rd_send, rd_recv, (int)red_count, MPI_CHAR, MPI_SUM, 0, MPI_COMM_WORLD);
 #endif
@@ -1207,9 +1229,10 @@ int main(int argc, char **argv)
                     MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
-                    hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+                    // hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
+                    // MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
+                    // hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+                    MPI_Allreduce(ar_d_send, ar_d_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
 #else
                     MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
 #endif
@@ -1237,9 +1260,10 @@ int main(int argc, char **argv)
                     MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
                     cuda_check(cudaMemcpy(ar_d_recv, ar_h_recv, ar_count, cudaMemcpyHostToDevice));
 #elif defined(USE_HIP)
-                    hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
-                    MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
-                    hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+                    // hipMemcpy(ar_h_send, ar_d_send, ar_count, hipMemcpyDeviceToHost);
+                    // MPI_Allreduce(ar_h_send, ar_h_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
+                    // hipMemcpy(ar_d_recv, ar_h_recv, ar_count, hipMemcpyHostToDevice);
+                    MPI_Allreduce(ar_d_send, ar_d_recv, (int)ar_count, MPI_CHAR, MPI_SUM, region_comm);
 #else
                     MPI_Allreduce(ar_send, ar_recv, (int)ar_count, MPI_CHAR, MPI_SUM,region_comm);
 #endif
