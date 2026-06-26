@@ -45,7 +45,7 @@ inline void cuda_check(cudaError_t e) {
 #endif
 
 // ---- Operation selector (default: PingPong) ----
-enum class OpKind { All, PingPong, Alltoall, Reduce, Allreduce };
+enum class OpKind { All, PingPong, Alltoall, Reduce, Allreduce, Bandwidth };
 
 const char *get_hostname_for_rank(int rank, char all_hostnames[][1024], int size)
 {
@@ -216,7 +216,7 @@ int main(int argc, char **argv)
     const char *usage =
         "Usage: %s [-h] [-i n-iterations] [-p rank1,rank2] [-m msg_sz] "
         "[-n n_nodes] [-s sys_cores_per_socket] [-c sys_cores_per_node] [-b metadata] [-k pingpong_num_pairs]"
-        "[-O pingpong|alltoall|reduce|allreduce|all]\n"
+        "[-O pingpong|alltoall|reduce|allreduce|bandwidth|all]\n"
         "Default: -O pingpong\n";
 
     while ((opt = getopt(argc, argv, "hi:p:m:n:s:c:b:k:O:")) != -1)
@@ -258,10 +258,11 @@ int main(int argc, char **argv)
                 else if (s == "alltoall") op = OpKind::Alltoall;
                 else if (s == "reduce")   op = OpKind::Reduce;
                 else if (s == "allreduce")op = OpKind::Allreduce;
+                else if (s == "bandwidth")op = OpKind::Bandwidth;
                 else if (s == "all")      op = OpKind::All;
                 else {
                     if (rank == 0)
-                        fprintf(stderr, "Unknown -O value '%s'. Expected pingpong|alltoall|reduce|allreduce|all\n", s.c_str());
+                        fprintf(stderr, "Unknown -O value '%s'. Expected pingpong|alltoall|reduce|allreduce|bandwidth|all\n", s.c_str());
                     MPI_Abort(MPI_COMM_WORLD, 1);
                 }
                 break;
@@ -286,7 +287,8 @@ int main(int argc, char **argv)
                op == OpKind::PingPong ? "pingpong" :
                op == OpKind::Alltoall ? "alltoall" :
                op == OpKind::Reduce   ? "reduce" :
-               op == OpKind::Allreduce? "allreduce" : "all");
+               op == OpKind::Allreduce? "allreduce" : 
+               op == OpKind::Bandwidth? "bandwidth" : "all");
 
 #if defined(USE_CALIPER)
         std::stringstream rankmap;
@@ -341,6 +343,12 @@ int main(int argc, char **argv)
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
     cali_id_t ar_min_time_sec_attr  = cali_create_attribute("ar_min_time_sec", CALI_TYPE_DOUBLE,
                                  CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t bw_avg_time_sec_attr  = cali_create_attribute("bw_avg_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t bw_max_time_sec_attr  = cali_create_attribute("bw_max_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
+    cali_id_t bw_min_time_sec_attr  = cali_create_attribute("bw_min_time_sec", CALI_TYPE_DOUBLE,
+                                 CALI_ATTR_ASVALUE | CALI_ATTR_AGGREGATABLE);
 
     const char *src_dest_attributes = R"json(
         {
@@ -370,7 +378,10 @@ int main(int argc, char **argv)
                 {"expr": "any(max#red_min_time_sec)", "as" : "red_min_s"},
                 {"expr": "any(max#ar_avg_time_sec)", "as" : "ar_avg_s"},
                 {"expr": "any(max#ar_max_time_sec)", "as" : "ar_max_s"},
-                {"expr": "any(max#ar_min_time_sec)", "as" : "ar_min_s"}
+                {"expr": "any(max#ar_min_time_sec)", "as" : "ar_min_s"},
+                {"expr": "any(max#bw_avg_time_sec)", "as" : "bw_avg_s"},
+                {"expr": "any(max#bw_max_time_sec)", "as" : "bw_max_s"},
+                {"expr": "any(max#bw_min_time_sec)", "as" : "bw_min_s"}
                 ],
                 "group by": ["comm_phase"],
             },
@@ -394,7 +405,10 @@ int main(int argc, char **argv)
                 {"expr": "any(any#max#red_min_time_sec)", "as" : "red_min_s"},
                 {"expr": "any(any#max#ar_avg_time_sec)", "as" : "ar_avg_s"},
                 {"expr": "any(any#max#ar_max_time_sec)", "as" : "ar_max_s"},
-                {"expr": "any(any#max#ar_min_time_sec)", "as" : "ar_min_s"}
+                {"expr": "any(any#max#ar_min_time_sec)", "as" : "ar_min_s"},
+                {"expr": "any(any#max#bw_avg_time_sec)", "as" : "bw_avg_s"},
+                {"expr": "any(any#max#bw_max_time_sec)", "as" : "bw_max_s"},
+                {"expr": "any(any#max#bw_min_time_sec)", "as" : "bw_min_s"}
                 ],
                 "group by": ["comm_phase"],
             }
@@ -1312,6 +1326,282 @@ int main(int argc, char **argv)
                 MPI_Comm_free(&region_comm);
                 MPI_Barrier(MPI_COMM_WORLD);
             }
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // ===================== BANDWIDTH =====================
+        if (op == OpKind::Bandwidth || op == OpKind::All)
+        {
+            for (int partner_rank : partners)
+            {
+                std::string region_label = region_names[partner_rank];
+
+                std::vector<RankPair> pairs =
+                    build_pingpong_pairs(region_label,
+                                        size,
+                                        sys_cores_per_socket,
+                                        sys_cores_per_node,
+                                        pingpong_num_pairs);
+
+                if (pairs.empty()) {
+                    if (rank == 0)
+                        printf("Skipping region %s: no valid bandwidth pairs\n", region_label.c_str());
+                    continue;
+                }
+
+                std::map<int, int> src_to_dst;
+                std::map<int, int> dst_to_src;
+                std::set<int> active_ranks;
+
+                for (auto &p : pairs) {
+                    src_to_dst[p.src] = p.dst;
+                    dst_to_src[p.dst] = p.src;
+                    active_ranks.insert(p.src);
+                    active_ranks.insert(p.dst);
+                }
+
+                int active = active_ranks.count(rank) > 0;
+
+                MPI_Comm bw_comm = MPI_COMM_NULL;
+                MPI_Comm_split(MPI_COMM_WORLD, active ? 0 : MPI_UNDEFINED, rank, &bw_comm);
+
+                if (!active) {
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    continue;
+                }
+
+                int bw_rank = 0;
+                MPI_Comm_rank(bw_comm, &bw_rank);
+
+                bool is_sender = src_to_dst.count(rank) > 0;
+                bool is_receiver = dst_to_src.count(rank) > 0;
+
+                int peer = MPI_PROC_NULL;
+                if (is_sender) {
+                    peer = src_to_dst[rank];
+                }
+                else if (is_receiver) {
+                    peer = dst_to_src[rank];
+                }
+
+                if (rank == 0)
+                {
+                    printf("\n--- Testing %s (BANDWIDTH) with %zu pairs ---\n", region_label.c_str(), pairs.size());
+
+                    for (auto &p : pairs) {
+                        printf("  one-way pair %d (%s) -> %d (%s)\n", p.src, all_hostnames[p.src], p.dst, all_hostnames[p.dst]);
+                    }
+                    fflush(stdout);
+
+#if defined(USE_CALIPER)
+                    cali_set_int(src_rank_attr, pairs[0].src);
+                    cali_set_int(dest_rank_attr, pairs[0].dst);
+                    cali_set_int(src_node_attr, extract_node_number(all_hostnames[pairs[0].src]));
+                    cali_set_int(dest_node_attr, extract_node_number(all_hostnames[pairs[0].dst]));
+#endif
+                }
+
+                const int base_tag = 3000 + ((partner_rank % 2000) * 10);
+                const int BW_TAG = base_tag;
+
+                int warmup = 1;
+                size_t bw_total_bytes = (size_t)WINDOW_SIZE * (size_t)message;
+
+                // ---------- buffer allocation ----------
+#if defined(USE_HIP)
+                char *send_flat = nullptr;
+                char *recv_flat = nullptr;
+
+                hipError_t err1 = hipMalloc((void**)&send_flat, bw_total_bytes);
+                hipError_t err2 = hipMalloc((void**)&recv_flat, bw_total_bytes);
+
+                if (err1 != hipSuccess || err2 != hipSuccess) {
+                    fprintf(stderr, "HIP malloc failed: %s %s\n", hipGetErrorString(err1), hipGetErrorString(err2));
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+
+                char *h_tmp = (char*)malloc(bw_total_bytes);
+                if (!h_tmp) {
+                    fprintf(stderr, "Rank %d host malloc failed for %zu bytes\n", rank, bw_total_bytes);
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+
+                fill_with_random_pattern(h_tmp, bw_total_bytes);
+
+                hipError_t cuerr1 = hipMemcpy(send_flat, h_tmp, bw_total_bytes, hipMemcpyHostToDevice);
+                assert(cuerr1 == hipSuccess);
+                hipError_t cuerr2 = hipMemset(recv_flat, 0, bw_total_bytes);
+                assert(cuerr2 == hipSuccess);
+
+                free(h_tmp);
+
+#elif defined(USE_CUDA)
+                int dev_count = 0;
+                cuda_check(cudaGetDeviceCount(&dev_count));
+                cuda_check(cudaSetDevice(rank % (dev_count > 0 ? dev_count : 1)));
+
+                char *send_flat = nullptr;
+                char *recv_flat = nullptr;
+
+                cuda_check(cudaMalloc((void**)&send_flat, bw_total_bytes));
+                cuda_check(cudaMalloc((void**)&recv_flat, bw_total_bytes));
+
+                char *h_tmp = nullptr;
+                cuda_check(cudaMallocHost((void**)&h_tmp, bw_total_bytes));
+                fill_with_random_pattern(h_tmp, bw_total_bytes);
+                cuda_check(cudaMemcpy(send_flat, h_tmp, bw_total_bytes, cudaMemcpyHostToDevice));
+                cuda_check(cudaMemset(recv_flat, 0, bw_total_bytes));
+                cuda_check(cudaFreeHost(h_tmp));
+
+#else
+                char *send_flat = (char*)malloc(bw_total_bytes);
+                char *recv_flat = (char*)malloc(bw_total_bytes);
+
+                if (!send_flat || !recv_flat) {
+                    fprintf(stderr, "Rank %d malloc failed for %zu bytes\n", rank, bw_total_bytes);
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+
+                fill_with_random_pattern(send_flat, bw_total_bytes);
+                memset(recv_flat, 0, bw_total_bytes);
+#endif
+
+                std::vector<char*> s_buf(WINDOW_SIZE);
+                std::vector<char*> r_buf(WINDOW_SIZE);
+
+                for (int j = 0; j < WINDOW_SIZE; ++j) {
+                    s_buf[j] = send_flat + (size_t)j * (size_t)message;
+                    r_buf[j] = recv_flat + (size_t)j * (size_t)message;
+                }
+
+                std::vector<MPI_Request> requests(WINDOW_SIZE);
+
+                MPI_Barrier(bw_comm);
+
+                // ---------- warmup ----------
+                for (int i = 0; i < warmup; ++i)
+                {
+                    if (is_receiver) {
+                        for (int j = 0; j < WINDOW_SIZE; ++j) {
+                            MPI_Irecv(r_buf[j], message, MPI_CHAR, peer, BW_TAG + j, MPI_COMM_WORLD, &requests[j]);
+                        }
+                    }
+
+                    MPI_Barrier(bw_comm);
+
+                    if (is_sender) {
+                        for (int j = 0; j < WINDOW_SIZE; ++j) {
+                            MPI_Isend(s_buf[j], message, MPI_CHAR, peer, BW_TAG + j, MPI_COMM_WORLD, &requests[j]);
+                        }
+                        MPI_Waitall(WINDOW_SIZE, requests.data(), MPI_STATUSES_IGNORE);
+                    }
+                    if (is_receiver) {
+                        MPI_Waitall(WINDOW_SIZE, requests.data(), MPI_STATUSES_IGNORE);
+                    }
+
+                    MPI_Barrier(bw_comm);
+                }
+
+#if defined(USE_CALIPER)
+                CALI_MARK_BEGIN(region_label.c_str());
+#endif
+
+                // ---------- timed bandwidth ----------
+                double total_time = 0.0;
+                double min_time = std::numeric_limits<double>::infinity();
+                double max_time = 0.0;
+                int iters = 0;
+
+                MPI_Barrier(bw_comm);
+
+                for (int i = 0; i < num_iterations; ++i)
+                {
+                    if (is_receiver) {
+                        for (int j = 0; j < WINDOW_SIZE; ++j) {
+                            MPI_Irecv(r_buf[j], message, MPI_CHAR, peer, BW_TAG + j, MPI_COMM_WORLD, &requests[j]);
+                        }
+                    }
+
+                    MPI_Barrier(bw_comm);
+
+                    if (is_sender) {
+                        double start = MPI_Wtime();
+                        for (int j = 0; j < WINDOW_SIZE; ++j) {
+                            MPI_Isend(s_buf[j], message, MPI_CHAR, peer, BW_TAG + j, MPI_COMM_WORLD, &requests[j]);
+                        }
+
+                        MPI_Waitall(WINDOW_SIZE, requests.data(), MPI_STATUSES_IGNORE);
+
+                        double end = MPI_Wtime();
+                        double dt = end - start;
+
+                        total_time += dt;
+                        if (dt < min_time) min_time = dt;
+                        if (dt > max_time) max_time = dt;
+                        ++iters;
+                    }
+
+                    if (is_receiver) {
+                        MPI_Waitall(WINDOW_SIZE, requests.data(), MPI_STATUSES_IGNORE);
+                    }
+
+                    MPI_Barrier(bw_comm);
+                }
+
+                double local_avg = 0.0;
+                double local_min = std::numeric_limits<double>::infinity();
+                double local_max = 0.0;
+
+                if (is_sender && iters > 0) {
+                    local_avg = total_time / iters;
+                    local_min = min_time;
+                    local_max = max_time;
+                }
+
+                double bandwidth_avg_time = 0.0;
+                double bandwidth_min_time = 0.0;
+                double bandwidth_max_time = 0.0;
+
+                MPI_Reduce(&local_avg, &bandwidth_avg_time, 1, MPI_DOUBLE, MPI_MAX, 0, bw_comm);
+                MPI_Reduce(&local_min, &bandwidth_min_time, 1, MPI_DOUBLE, MPI_MIN, 0, bw_comm);
+                MPI_Reduce(&local_max, &bandwidth_max_time, 1, MPI_DOUBLE, MPI_MAX, 0, bw_comm);
+
+                if (bw_rank == 0)
+                {
+#if defined(USE_CALIPER)
+                    cali_set_string(comm_phase_attr, "bandwidth");
+                    cali_set_double(bw_avg_time_sec_attr, bandwidth_avg_time);
+                    cali_set_double(bw_min_time_sec_attr, bandwidth_min_time);
+                    cali_set_double(bw_max_time_sec_attr, bandwidth_max_time);
+#endif
+
+                    printf("BANDWIDTH %s: avg=%g s, min=%g s, max=%g s\n", region_label.c_str(), bandwidth_avg_time, bandwidth_min_time, bandwidth_max_time);
+                    fflush(stdout);
+                }
+
+#if defined(USE_CALIPER)
+                CALI_MARK_END(region_label.c_str());
+#endif
+
+                // ---------- cleanup ----------
+#if defined(USE_HIP)
+                hipFree(send_flat);
+                hipFree(recv_flat);
+#elif defined(USE_CUDA)
+                cuda_check(cudaFree(send_flat));
+                cuda_check(cudaFree(recv_flat));
+#else
+                free(send_flat);
+                free(recv_flat);
+#endif
+
+                MPI_Comm_free(&bw_comm);
+                MPI_Barrier(MPI_COMM_WORLD);
+            }
+
+            if (rank == 0)
+                printf("Done with Bandwidth\n");
         }
 
 #if defined(USE_CALIPER)
